@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <circle cx="100" cy="100" r="100" fill="#ffffff"/>
+  <g fill="none" stroke="#000000" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter">
+    <!-- Left leg of A (apex to bottom-left) -->
+    <line x1="100" y1="38" x2="44" y2="148"/>
+    <!-- Right leg of A (apex to bottom-right) -->
+    <line x1="100" y1="38" x2="156" y2="148"/>
+    <!-- A crossbar (slightly above middle, left half only) -->
+    <line x1="62" y1="108" x2="100" y2="108"/>
+    <!-- Inner curved tongue/peak shape coming down from apex -->
+    <path d="M 100 38 Q 78 70 100 108"/>
+  </g>
+  <text x="100" y="178"
+        font-family="'Helvetica Neue', Arial, sans-serif"
+        font-size="16"
+        font-weight="300"
+        letter-spacing="3.5"
+        text-anchor="middle"
+        fill="#000000">ALTITUDE</text>
+</svg>
