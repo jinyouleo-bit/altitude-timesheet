@@ -1038,24 +1038,47 @@ function svDefs(){localStorage.setItem('ts_jobdefs',JSON.stringify(jobDefs))}
 /* Clients data layer (parallels employees / jobDefs) */
 function ldClients(){try{clients=JSON.parse(localStorage.getItem('ts_clients')||'[]');if(!Array.isArray(clients))clients=[]}catch(e){clients=[]}}
 function svClients(){localStorage.setItem('ts_clients',JSON.stringify(clients))}
-function genClientId(){return 'cl_'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4)}
+/* Stable, name-derived id so two devices running migration on the same builder
+   name produce the same id (avoids the "random ID per device" drift that breaks
+   builderId references after cloud sync). Falls back to random if name has no
+   alphanumerics. */
+function _stableClientId(name){
+  var slug=String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  return slug?'cl_'+slug:('cl_'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4));
+}
+function genClientId(name){return _stableClientId(name)}
 function findClient(id){if(!id)return null;for(var i=0;i<clients.length;i++)if(clients[i].id===id)return clients[i];return null}
 function findClientByName(nm){if(!nm)return null;var n=String(nm).toLowerCase().trim();for(var i=0;i<clients.length;i++)if(((clients[i].name||'').toLowerCase().trim())===n)return clients[i];return null}
-/* Auto-migrate existing jobs into builders by parsing the first word of each project
-   name. Only runs on jobs missing builderId, so it's idempotent and safe to re-run
-   after sync. Single-word projects (Factory, Office, Farm) stay ungrouped — those
-   are usually internal categories rather than client work. */
+/* Auto-migrate + self-heal. Runs at boot AND after every cloud pull, so it:
+     1. Repairs jobs whose builderId points to a deleted/missing client
+     2. Assigns builderId to new jobs based on first word of project name
+     3. Dedupes clients by case-insensitive name (cross-device drift fix:
+        if device A had cl_xyz and device B had cl_abc both named "Kane",
+        merge into one and rewrite job references)
+   Idempotent — safe to call repeatedly. */
 function _migrateClientsFromJobs(){
   if(!Array.isArray(clients))clients=[];
   if(!Array.isArray(jobDefs)||jobDefs.length===0)return;
   var changed=false;
+  /* Step 1: dedupe clients by name. Build remap old-id -> kept-id. */
+  var seen={};var dedup=[];var idRemap={};
+  clients.forEach(function(c){
+    var key=String(c.name||'').toLowerCase().trim();
+    if(!key){dedup.push(c);return}
+    if(seen[key]){idRemap[c.id]=seen[key].id;changed=true}
+    else{seen[key]=c;dedup.push(c)}
+  });
+  if(Object.keys(idRemap).length){clients=dedup}
+  /* Step 2: repair stale builderId refs + assign missing ones. */
   jobDefs.forEach(function(j){
+    if(j.builderId&&idRemap[j.builderId]){j.builderId=idRemap[j.builderId];changed=true}
+    if(j.builderId&&!findClient(j.builderId)){delete j.builderId;changed=true}
     if(j.builderId)return;
     var nm=(j.name||'').trim();if(!nm)return;
     var parts=nm.split(/\s+/);if(parts.length<2)return;
     var first=parts[0];
     var c=findClientByName(first);
-    if(!c){c={id:genClientId(),name:first,status:'active'};clients.push(c);changed=true}
+    if(!c){c={id:_stableClientId(first),name:first,status:'active'};clients.push(c);changed=true}
     j.builderId=c.id;changed=true;
   });
   if(changed){svClients();svDefs()}
@@ -1552,9 +1575,23 @@ function _openJobInfo(jobName){
   document.body.appendChild(ov);
 }
 function _pickJob(btn,k){
-  var activeJobs=_allowedActiveJobs().map(function(j){return j.name}).sort();
+  /* Build grouped option list for the mobile picker — jobs grouped under their
+     builder/client. Falls back to flat list if no clients exist yet. */
+  var active=_allowedActiveJobs();
+  var byBuilder={};
+  active.forEach(function(j){var bid=j.builderId||'_none';if(!byBuilder[bid])byBuilder[bid]=[];byBuilder[bid].push(j)});
+  /* Active builders A-Z first, then jobs without a builder under "Other" group last. */
+  var ordered=clients.slice().filter(function(c){return c.status!=='archived'&&byBuilder[c.id]&&byBuilder[c.id].length}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'')});
+  var opts=[];
+  ordered.forEach(function(c){
+    (byBuilder[c.id]||[]).slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'')}).forEach(function(j){opts.push({value:j.name,group:c.name})});
+  });
+  (byBuilder['_none']||[]).slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'')}).forEach(function(j){opts.push({value:j.name,group:opts.length?'Other':''})});
+  /* Safety: if nothing was added (e.g. clients haven't been migrated yet on this
+     device), fall back to a plain flat sorted list. */
+  if(!opts.length)opts=active.map(function(j){return j.name}).sort();
   var cur=btn.nextElementSibling?btn.nextElementSibling.value:'';
-  _openMobPicker(activeJobs,cur,'jobs',function(val){
+  _openMobPicker(opts,cur,'jobs',function(val){
     btn.textContent=val;btn.classList.remove('empty');
     if(btn.nextElementSibling)btn.nextElementSibling.value=val;
     onJobSel(btn.nextElementSibling||btn,k);save();
@@ -2562,6 +2599,10 @@ function _renderJobCard(parent,ji){var job=jobDefs[ji];
     parent.appendChild(card);
 }
 /* === Builder management — add/rename/archive/delete + reassign projects to a builder === */
+/* Builder CRUD silently re-pushes the bundle (jobDefs+employees+clients) so
+   employee phones immediately see the new builder list, exactly the same
+   pattern as employee CRUD. */
+function _bldPushSilent(){try{if(typeof pushEmpsSilently==='function')pushEmpsSilently()}catch(e){}}
 function addClient(){
   var inp=document.getElementById('newBld');var nm=(inp&&inp.value||'').trim();
   if(!nm){alert('Builder name required');if(inp)inp.focus();return}
@@ -2571,7 +2612,7 @@ function addClient(){
   try{audit('builder_add',{name:nm})}catch(e){}
   if(inp)inp.value='';
   toast('Builder added: '+nm);
-  renderAdmin();
+  renderAdmin();_bldPushSilent();
 }
 function renameClient(id){
   var c=findClient(id);if(!c)return;
@@ -2585,14 +2626,14 @@ function renameClient(id){
   c.name=nv;svClients();
   try{audit('builder_rename',{from:old,to:nv})}catch(e){}
   toast('Builder renamed: '+old+' → '+nv);
-  renderAdmin();
+  renderAdmin();_bldPushSilent();
 }
 function toggleClientStatus(id){
   var c=findClient(id);if(!c)return;
   c.status=(c.status==='archived'?'active':'archived');
   svClients();
   toast('Builder '+(c.status==='archived'?'archived':'reactivated')+': '+c.name);
-  renderAdmin();
+  renderAdmin();_bldPushSilent();
 }
 function deleteClient(id){
   var c=findClient(id);if(!c)return;
@@ -2608,7 +2649,7 @@ function deleteClient(id){
   svClients();
   try{audit('builder_delete',{name:c.name,reassigned:used.length})}catch(e){}
   toast('Builder deleted: '+c.name+(used.length?' ('+used.length+' project'+(used.length===1?'':'s')+' moved to Ungrouped)':''));
-  renderAdmin();
+  renderAdmin();_bldPushSilent();
 }
 function setJobBuilder(ji,value){
   var job=jobDefs[ji];if(!job)return;
@@ -2620,14 +2661,14 @@ function setJobBuilder(ji,value){
     if(existing){job.builderId=existing.id}
     else{var c={id:genClientId(),name:nm,status:'active'};clients.push(c);svClients();job.builderId=c.id}
     svDefs();toast('Project moved to builder: '+nm);
-    renderAdmin();
+    renderAdmin();_bldPushSilent();
     return;
   }
   if(value){job.builderId=value}else{delete job.builderId}
   svDefs();
   try{audit('job_builder',{job:job.name,builder:value?(findClient(value)||{}).name:'(Ungrouped)'})}catch(e){}
   toast('Project '+(value?'moved to '+(findClient(value)||{}).name:'moved to Ungrouped'));
-  renderAdmin();
+  renderAdmin();_bldPushSilent();
 }
 function togAdmin(el,ji){
   var b=document.getElementById('ajcb_'+ji);
@@ -2942,7 +2983,10 @@ function publishSync(){
   fetch(SYNC_URL,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:employees})
+    /* Include clients (builder/client list) so other devices see the same builder
+       groupings. If the edge function ignores unknown fields it's harmless —
+       clients still work locally and we fall back to per-jobDef.builderId. */
+    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:employees,clients:clients})
   }).then(function(r){return r.json()}).then(function(res){
     if(res.error)throw new Error(res.error);
     var ver={ts:res.version,jobs:res.jobs,tasks:res.tasks};
@@ -2971,13 +3015,13 @@ function showPubInfo(){
 
 function cpPub(){toast('Updates are pushed to cloud automatically. Employees sync on app open.')}
 
-/* SILENT PUSH — used after employee CRUD so phones auto-pick up changes
-   without the admin needing to remember to click Publish */
+/* SILENT PUSH — used after employee CRUD + builder/client CRUD so phones
+   auto-pick up changes without the admin needing to remember to click Publish */
 function pushEmpsSilently(){
   fetch(SYNC_URL,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:employees})
+    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:employees,clients:clients})
   }).then(function(r){return r.json()}).then(function(res){
     if(res.error)throw new Error(res.error);
     setSyncVer({ts:res.version,jobs:res.jobs,tasks:res.tasks});
@@ -3011,6 +3055,12 @@ function cloudSync(silent){
          otherwise their in-progress add/edit gets clobbered. */
       var adminEditingEmps=(typeof IS_ADMIN!=='undefined'&&IS_ADMIN)&&document.querySelector('#aCont [data-tab="emps"]')&&document.querySelector('#aCont [data-tab="emps"]').classList.contains('active')&&document.getElementById('adminMo')&&document.getElementById('adminMo').classList.contains('open');
       if(res.employees&&Array.isArray(res.employees)&&!adminEditingEmps){employees=res.employees;svEmps();}
+      /* Pull clients (builder/client list) if the edge function echoes it.
+         If absent, run migration so any new jobs still get auto-grouped from
+         their name's first word — keeps things working even if the cloud
+         function isn't passing clients through yet. */
+      if(res.clients&&Array.isArray(res.clients)){clients=res.clients;svClients()}
+      _migrateClientsFromJobs();
       svDefs();localStorage.setItem('ts_rate',String(defRate));
       localStorage.setItem('ts_sync_version',String(res.version));
       localStorage.setItem('ts_last_sync',String(Date.now()));
