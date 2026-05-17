@@ -1,0 +1,17 @@
+# Dependencies / build artifacts
+node_modules/
+.wrangler/
+package-lock.json
+
+# Claude Code local state
+.claude/
+
+# Deploy script — contains a real Cloudflare API token, DO NOT commit.
+# Use deploy-cf.sh.example as a template.
+deploy-cf.sh
+
+# Generated Word docs (regenerate from .md via make-docx.ps1)
+*.docx
+
+# Misc
+pdf_pages/

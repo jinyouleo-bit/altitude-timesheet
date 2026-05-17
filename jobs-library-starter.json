@@ -1,0 +1,108 @@
+{
+  "rate": 65,
+  "jobDefs": [
+    {
+      "name": "First Light",
+      "status": "active",
+      "projectType": "non_eba",
+      "hourlyRate": 55,
+      "budget": 5060,
+      "totalBudget": 5060,
+      "startDate": "2026-01-28",
+      "deadline": "2027-01-28",
+      "tasks": [
+        "Tender",
+        "Site Setup",
+        "Press Metals",
+        "Nogging Marking",
+        "Site Measure",
+        "Day Labour",
+        "Entry Doors",
+        "Fire Rated Doors",
+        "Non Fire Rated Doors",
+        "Internal apartment Ezy Jamb",
+        "Internal Apartment Split Jambs",
+        "Internal Apartment Cavity Slider",
+        "Sanitary Pre drill",
+        "Sanitary Fitoff",
+        "Internal Door hardware Fit off",
+        "Entry Door Fit off",
+        "Common Area Door Fit off",
+        "Lift Protection",
+        "Fire Tags",
+        "Deliveries",
+        "Loading",
+        "Detailing",
+        "Subbie meeting",
+        "Factory split jambs",
+        "Factory joinery doors"
+      ]
+    },
+    {
+      "name": "Factory",
+      "status": "active",
+      "projectType": "custom",
+      "hourlyRate": 0,
+      "tasks": [
+        "Clean Up",
+        "Machinery Repairs",
+        "Deliveries",
+        "Split Jamb",
+        "Joinery Doors",
+        "Contract Works",
+        "Setting up Factor",
+        "Bowens 2 Fullarton",
+        "Test and tagging",
+        "Build timesheet APP"
+      ]
+    },
+    {
+      "name": "Farm",
+      "status": "active",
+      "tasks": [
+        "Weed Spraying",
+        "Vineyard Spraying",
+        "Building Works",
+        "Watering",
+        "Slashing",
+        "Harvesting",
+        "Wine Making",
+        "Machinery Repairs",
+        "Machinery servicing",
+        "Irrigation Repairs",
+        "Vineyard post Repairs",
+        "Farm Fencing",
+        "Vine Removal"
+      ]
+    },
+    {
+      "name": "Ironside_Outercircle",
+      "status": "active",
+      "projectType": "non_eba",
+      "hourlyRate": 55,
+      "tasks": [
+        "Day labour",
+        "Defects"
+      ]
+    },
+    {
+      "name": "St Vincent Hospital Roofworks",
+      "status": "active",
+      "projectType": "eba",
+      "hourlyRate": 62.21,
+      "tasks": [
+        "Day labour"
+      ]
+    },
+    {
+      "name": "Ardons Y7 Doors",
+      "status": "active",
+      "projectType": "non_eba",
+      "hourlyRate": 55,
+      "tasks": [
+        "Factory split jambs frames",
+        "Factory split jambs"
+      ]
+    }
+  ]
+}

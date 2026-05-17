@@ -1,4 +1,4 @@
-const CACHE = 'timesheet-v20';
+const CACHE = 'timesheet-v108';
 const ASSETS = [
   './index.html',
   './manifest.json',

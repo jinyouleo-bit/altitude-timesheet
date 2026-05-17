@@ -1,0 +1,18 @@
+#!/bin/bash
+# Deploy to Cloudflare Pages - Altitude Timesheet
+# Usage: copy this file to deploy-cf.sh, fill in your token + path, then: bash deploy-cf.sh
+
+export PATH="/c/Program Files/nodejs:$PATH"
+# Get a token at: https://dash.cloudflare.com/ -> My Profile -> API Tokens
+export CLOUDFLARE_API_TOKEN="PUT_YOUR_CLOUDFLARE_API_TOKEN_HERE"
+
+# Change to wherever this project folder lives on your machine
+cd "/c/Users/YOUR_USERNAME/Desktop/Altitude timesheet"
+
+echo "=== Deploying to Cloudflare Pages ==="
+npx wrangler pages deploy . --project-name=altitude-timesheet --branch=main --commit-dirty=true
+
+echo ""
+echo "=== Done! ==="
+echo "Live at:  https://altitude-timesheet.pages.dev"
+echo "Admin:    https://altitude-timesheet.pages.dev/?admin=1234"
