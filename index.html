@@ -270,6 +270,30 @@ body.is-admin .emp-only{display:none!important}
 .proj-bld-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 8px;background:#f5f7ff;border-radius:6px}
 .proj-bld-row label{font-size:.72rem;color:var(--pri);font-weight:700;white-space:nowrap}
 .proj-bld-row select{flex:1;padding:5px 8px;border:1.5px solid #c5cae9;border-radius:6px;font-size:.82rem;background:#fff}
+/* === TASK BUDGETS — distribution UI inside Budgets-tab project cards === */
+.tbg-block{margin-top:12px;padding-top:10px;border-top:1px dashed #d0d7e8}
+.tbg-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.tbg-title{font-size:.7rem;font-weight:800;color:var(--pri);letter-spacing:.4px}
+.tbg-actions{display:flex;gap:4px}
+.tbg-btn{border:none;border-radius:5px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer}
+.tbg-btn-pri{background:var(--pri);color:#fff}
+.tbg-btn-pri:hover{background:var(--pri-dk)}
+.tbg-btn-sec{background:#eee;color:#666}
+.tbg-btn-sec:hover{background:#ddd}
+.tbg-summary{font-size:.74rem;color:#555;margin-bottom:8px;padding:6px 8px;background:#fafbff;border-radius:6px}
+.tbg-row{display:grid;grid-template-columns:1.4fr 70px 1fr;gap:6px;align-items:center;padding:3px 0;font-size:.78rem}
+.tbg-row + .tbg-row{border-top:1px dotted #eef0f5}
+.tbg-name{color:#333;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbg-name-office{color:#7b1fa2}
+.tbg-input{padding:4px 6px;border:1.5px solid var(--bdr);border-radius:5px;font-size:.78rem;text-align:center;background:#fff}
+.tbg-input:focus{outline:none;border-color:var(--pri);background:#fafbff}
+.tbg-used{font-size:.72rem;color:#666;white-space:nowrap}
+.tbg-bar{grid-column:1 / -1;height:6px;margin:2px 0 4px}
+.tbg-bar-placeholder{grid-column:1 / -1;height:6px}
+@media(max-width:480px){
+  .tbg-row{grid-template-columns:1fr 60px;gap:4px}
+  .tbg-used{grid-column:1 / -1;margin-top:2px}
+}
 .adr{display:flex;gap:6px;margin-top:4px}.adr input{flex:1;padding:8px 10px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.88rem}
 .adr button{background:var(--pri);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700;white-space:nowrap}
 .admin-login{text-align:center;padding:36px 20px}
@@ -4185,13 +4209,57 @@ function anaExportXlsx(){
 
 /* PROJECT DASHBOARD — cumulative cross-week progress */
 var _projData=null;
+/* Per-project per-task hours used, aggregated from every cloud timesheet.
+   Populated by _fetchTaskUsage() each time the Budgets tab opens. Shape:
+   { jobName: { taskName: usedHours } } — keyed by raw task name (regular + office
+   share the same namespace; case-sensitive). */
+var _projTaskUsage={};
+function _fetchTaskUsage(){
+  return fetch(SYNC_URL+'/weeks').then(function(r){return r.json()}).then(function(res){
+    var weeks=(res.weeks||[]);
+    if(!weeks.length)return {};
+    var promises=weeks.map(function(wk){
+      return fetch(SYNC_URL+'/timesheets?week='+wk).then(function(r){return r.json()}).then(function(j){return(j.timesheets||[])}).catch(function(){return[]});
+    });
+    return Promise.all(promises).then(function(arrays){
+      var usage={};
+      arrays.forEach(function(tss){
+        tss.forEach(function(ts){
+          if(typeof _isSystemRecord==='function'&&_isSystemRecord(ts))return;
+          var d=ts.data||ts;
+          if(!d||d.status==='deleted')return;
+          (d.days||[]).forEach(function(day){
+            (day.jobs||[]).forEach(function(j){
+              if(!j.name)return;
+              (j.tasks||[]).forEach(function(t){
+                if(!t.name)return;
+                if(!usage[j.name])usage[j.name]={};
+                usage[j.name][t.name]=(usage[j.name][t.name]||0)+(parseFloat(t.hours)||0);
+              });
+            });
+          });
+        });
+      });
+      return usage;
+    });
+  }).catch(function(){return {}});
+}
 function openProjects(){
   document.getElementById('projLoading').style.display='';
   document.getElementById('projOut').innerHTML='';
-  fetch((SYNC_URL+'/projects')).then(function(r){return r.json()}).then(function(res){
+  /* Fetch the cumulative /projects rollup AND task-level usage in parallel.
+     Task usage requires walking every week's timesheets — a one-time cost when
+     Budgets opens. Cached in _projTaskUsage so renderProjects can re-render
+     without re-fetching after a setTaskBudget edit. */
+  Promise.all([
+    fetch(SYNC_URL+'/projects').then(function(r){return r.json()}),
+    _fetchTaskUsage()
+  ]).then(function(both){
     document.getElementById('projLoading').style.display='none';
+    var res=both[0];
     if(res.error)throw new Error(res.error);
     _projData=res.jobs||[];
+    _projTaskUsage=both[1]||{};
     renderProjects();
   }).catch(function(e){
     document.getElementById('projLoading').style.display='none';
@@ -4269,10 +4337,110 @@ function renderProjects(){
       empArr.forEach(function(e,i){h+=(i>0?', ':'')+esc(e.n)+' <strong>'+e.h.toFixed(1)+'h</strong>'});
       h+='</div>';
     }
+    /* === TASK BUDGETS — distribute the total project budget across individual tasks.
+       Lets you see which tasks are over/under their allocation. Inputs save on blur
+       (onchange) and silently push to cloud, mirroring builder/employee CRUD. */
+    h+=_renderTaskBudgets(def);
     h+='</div>';
     h+='</div>';
   });
   out.innerHTML=h;
+}
+/* Build the TASK BUDGETS section for one project card. Returns HTML string.
+   Combined namespace: regular tasks + office tasks share the same budget keying
+   (case-sensitive name match against jobDefs[i].taskBudgets[taskName]). */
+function _renderTaskBudgets(def){
+  var tb=parseFloat(def.totalBudget)||0;
+  var regTasks=(def.tasks||[]).slice();
+  var offTasks=(def.officeTasks||[]).slice();
+  var taskList=regTasks.map(function(t){return{name:t,isOffice:false}})
+    .concat(offTasks.map(function(t){return{name:t,isOffice:true}}))
+    .sort(function(a,b){return a.name.localeCompare(b.name)});
+  if(!taskList.length)return '';
+  var taskBudgets=def.taskBudgets||{};
+  var taskUsage=(_projTaskUsage||{})[def.name]||{};
+  var totalAlloc=0;
+  taskList.forEach(function(t){totalAlloc+=parseFloat(taskBudgets[t.name])||0});
+  var unalloc=tb>0?(tb-totalAlloc):0;
+  var unalloccolor=unalloc>0?'var(--org)':(unalloc<0?'var(--red)':'var(--grn)');
+  var jobName=def.name;
+  var safeJobJs=jobName.replace(/'/g,"\\'");
+  var h='<div class="tbg-block">';
+  h+='<div class="tbg-header">';
+  h+='<div class="tbg-title">◆ TASK BUDGETS</div>';
+  h+='<div class="tbg-actions">';
+  if(tb>0)h+='<button onclick="autoDistributeTaskBudgets(\''+safeJobJs+'\')" class="tbg-btn tbg-btn-pri">Auto-split remaining</button>';
+  h+='<button onclick="resetTaskBudgets(\''+safeJobJs+'\')" class="tbg-btn tbg-btn-sec">Reset</button>';
+  h+='</div></div>';
+  if(tb>0){
+    h+='<div class="tbg-summary">Allocated: <strong>'+totalAlloc.toFixed(0)+'</strong> / '+tb+' h &nbsp;|&nbsp; Unallocated: <strong style="color:'+unalloccolor+'">'+unalloc.toFixed(0)+'h</strong>';
+    if(unalloc<0)h+=' <span style="color:var(--red);font-weight:700">(over by '+Math.abs(unalloc).toFixed(0)+'h)</span>';
+    h+='</div>';
+  }else{
+    h+='<div class="tbg-summary" style="color:#aaa;font-style:italic">Set <em>Total Proj Hrs</em> on the project to enable allocated/unallocated tracking.</div>';
+  }
+  taskList.forEach(function(t){
+    var b=parseFloat(taskBudgets[t.name])||0;
+    var used=parseFloat(taskUsage[t.name])||0;
+    var pct=b>0?(used/b)*100:0;
+    var cls=pct<=80?'ok':(pct<=100?'warn':'over');
+    var safeTask=t.name.replace(/'/g,"\\'");
+    h+='<div class="tbg-row">';
+    h+='<span class="tbg-name'+(t.isOffice?' tbg-name-office':'')+'" title="'+(t.isOffice?'Office-only task':'')+'">'+(t.isOffice?'🏢 ':'')+esc(t.name)+'</span>';
+    h+='<input type="number" min="0" step="10" value="'+(b||'')+'" placeholder="—" onchange="setTaskBudget(\''+safeJobJs+'\',\''+safeTask+'\',this.value)" class="tbg-input" title="Budgeted hours for this task">';
+    h+='<span class="tbg-used">'+(used>0?used.toFixed(0)+'h used':'<span style="color:#ccc">no usage</span>')+(b>0&&used>0?' · '+pct.toFixed(0)+'%':'')+'</span>';
+    if(b>0){h+='<div class="bbar tbg-bar"><div class="bbar-fill '+cls+'" style="width:'+Math.min(pct,100)+'%"></div></div>'}
+    else h+='<div class="tbg-bar-placeholder"></div>';
+    h+='</div>';
+  });
+  h+='</div>';
+  return h;
+}
+function setTaskBudget(jobName,taskName,val){
+  var jd=jobDefs.find(function(j){return j.name===jobName});
+  if(!jd){toast('Project not found: '+jobName);return}
+  if(!jd.taskBudgets)jd.taskBudgets={};
+  var n=parseFloat(val);
+  if(!val||isNaN(n)||n<=0){delete jd.taskBudgets[taskName]}
+  else{jd.taskBudgets[taskName]=n}
+  svDefs();
+  try{audit('task_budget',{job:jobName,task:taskName,budget:isNaN(n)?null:n})}catch(e){}
+  if(typeof _bldPushSilent==='function')_bldPushSilent();
+  renderProjects();
+}
+function autoDistributeTaskBudgets(jobName){
+  var jd=jobDefs.find(function(j){return j.name===jobName});
+  if(!jd)return;
+  var tb=parseFloat(jd.totalBudget)||0;
+  if(!tb){alert('Set Total Proj Hrs first');return}
+  if(!jd.taskBudgets)jd.taskBudgets={};
+  var taskNames=(jd.tasks||[]).concat(jd.officeTasks||[]);
+  if(!taskNames.length){alert('No tasks defined for this project');return}
+  var allocSum=0,unallocatedTasks=[];
+  taskNames.forEach(function(t){var b=parseFloat(jd.taskBudgets[t])||0;if(b>0)allocSum+=b;else unallocatedTasks.push(t)});
+  if(!unallocatedTasks.length){alert('All tasks already have budgets. Use Reset first if you want to redistribute.');return}
+  var remaining=Math.max(0,tb-allocSum);
+  if(remaining===0){alert('No remaining budget to distribute. Reduce existing task budgets or increase Total Proj Hrs.');return}
+  var each=remaining/unallocatedTasks.length;
+  if(!confirm('Distribute '+remaining.toFixed(0)+'h evenly across '+unallocatedTasks.length+' unallocated task'+(unallocatedTasks.length===1?'':'s')+' ('+each.toFixed(1)+'h each)?'))return;
+  unallocatedTasks.forEach(function(t){jd.taskBudgets[t]=Math.round(each*10)/10});
+  svDefs();
+  try{audit('task_budget_auto',{job:jobName,distributed:remaining,tasks:unallocatedTasks.length})}catch(e){}
+  if(typeof _bldPushSilent==='function')_bldPushSilent();
+  toast('Distributed '+remaining.toFixed(0)+'h across '+unallocatedTasks.length+' tasks');
+  renderProjects();
+}
+function resetTaskBudgets(jobName){
+  var jd=jobDefs.find(function(j){return j.name===jobName});
+  if(!jd)return;
+  if(!jd.taskBudgets||!Object.keys(jd.taskBudgets).length){toast('No task budgets to clear');return}
+  if(!confirm('Clear all task budgets for "'+jobName+'"?'))return;
+  delete jd.taskBudgets;
+  svDefs();
+  try{audit('task_budget_reset',{job:jobName})}catch(e){}
+  if(typeof _bldPushSilent==='function')_bldPushSilent();
+  toast('Task budgets cleared');
+  renderProjects();
 }
 function togProj(idx){var el=document.getElementById('projd_'+idx);var ar=document.getElementById('projArr_'+idx);if(!el)return;var open=el.style.display==='none';el.style.display=open?'':'none';if(ar)ar.innerHTML=open?'&#9650;':'&#9660;'}
 
