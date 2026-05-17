@@ -704,6 +704,7 @@ body.is-locked .aj,body.is-locked .at,body.is-locked .je .rj,body.is-locked .tsk
           <select id="anaWeek" style="flex:1;min-width:150px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem;font-weight:600"></select>
           <input type="date" id="anaFrom" style="display:none;flex:1;min-width:120px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem">
           <input type="date" id="anaTo" style="display:none;flex:1;min-width:120px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem">
+          <select id="anaBuilder" onchange="anaBuilderChange()" style="flex:1;min-width:130px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem"><option value="">All Builders</option></select>
           <select id="anaProj" onchange="anaRefilter()" style="flex:1;min-width:130px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem"><option value="">All Projects</option></select>
           <select id="anaEmp" onchange="anaRefilter()" style="flex:1;min-width:130px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem"><option value="">All Employees</option></select>
           <button onclick="anaLoad()" style="padding:9px 18px;border:none;border-radius:8px;font-weight:700;font-size:.85rem;background:var(--pri);color:#fff">&#128202; Load</button>
@@ -3220,8 +3221,16 @@ function initAnalytics(){
       if(el2)el2.value=_anaWeeks[_anaWeeks.length-1];
     }
   }).catch(function(){});
-  // Populate project filter
-  var ps=document.getElementById('anaProj');if(ps){ps.innerHTML='<option value="">All Projects</option>';jobDefs.forEach(function(j){if(j.status!=='archived'){var o=document.createElement('option');o.value=j.name;o.textContent=j.name;ps.appendChild(o)}})}
+  // Populate builder filter (A-Z, active builders only; only show if any builder exists)
+  var bs=document.getElementById('anaBuilder');
+  if(bs){
+    bs.innerHTML='<option value="">All Builders</option>';
+    var activeBuilders=clients.filter(function(c){return c.status!=='archived'}).slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'')});
+    activeBuilders.forEach(function(c){var o=document.createElement('option');o.value=c.id;o.textContent=c.name;bs.appendChild(o)});
+    bs.style.display=activeBuilders.length?'':'none';
+  }
+  // Populate project filter (refresh based on current builder filter, if any)
+  _populateAnaProjects();
   // Populate employee filter
   var es=document.getElementById('anaEmp');if(es){es.innerHTML='<option value="">All Employees</option>';employees.filter(function(e){return e.status!=='archived'}).sort(function(a,b){return(a.name||'').localeCompare(b.name||'')}).forEach(function(e){var o=document.createElement('option');o.value=e.name;o.textContent=e.name;es.appendChild(o)})}
   // Sub-tabs always visible so Budgets is reachable without clicking Load first.
@@ -3231,6 +3240,27 @@ function initAnalytics(){
   if(sumEl&&!sumEl.innerHTML.trim()){
     sumEl.innerHTML='<div style="text-align:center;color:#aaa;padding:30px;font-size:.85rem;background:#f8f9fc;border-radius:10px">Pick a week or range above and click <strong style="color:var(--pri)">&#128202; Load</strong> to see analytics,<br>or switch to the <strong style="color:var(--pri)">Budgets</strong> tab for project progress.</div>';
   }
+}
+/* Populate the project dropdown, narrowed to a builder if one is selected.
+   Called by initAnalytics + anaBuilderChange. */
+function _populateAnaProjects(){
+  var ps=document.getElementById('anaProj');if(!ps)return;
+  var builderFilter=(document.getElementById('anaBuilder')||{}).value||'';
+  var cur=ps.value;
+  ps.innerHTML='<option value="">All Projects'+(builderFilter?' (under selected builder)':'')+'</option>';
+  jobDefs.filter(function(j){
+    if(j.status==='archived')return false;
+    if(builderFilter&&j.builderId!==builderFilter)return false;
+    return true;
+  }).slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'')}).forEach(function(j){
+    var o=document.createElement('option');o.value=j.name;o.textContent=j.name;ps.appendChild(o);
+  });
+  /* Preserve current project selection if it's still valid under the new builder */
+  if(cur&&Array.from(ps.options).some(function(o){return o.value===cur}))ps.value=cur;else ps.value='';
+}
+function anaBuilderChange(){
+  _populateAnaProjects();
+  anaRefilter();
 }
 function anaToggleMode(){
   var mode=document.getElementById('anaMode').value;
@@ -3242,6 +3272,7 @@ function anaLoad(){
   var mode=document.getElementById('anaMode').value;
   var projFilter=(document.getElementById('anaProj')||{}).value||'';
   var empFilter=(document.getElementById('anaEmp')||{}).value||'';
+  var builderFilter=(document.getElementById('anaBuilder')||{}).value||'';
   var el=document.getElementById('anaLoading');if(el)el.style.display='';
   document.getElementById('anaTabs').style.display='none';
   if(mode==='week'){
@@ -3251,7 +3282,7 @@ function anaLoad(){
       if(el)el.style.display='none';
       _repData=(res.timesheets||[]).filter(function(t){return !_isSystemRecord(t)}).map(function(t){return t.data||t}).filter(function(d){return d&&d.status!=='deleted'});
       _anaMyobCache={};_anaMyobCache[week]=getMyobData(week);
-      _anaApplyFilters(projFilter,empFilter,[week]);
+      _anaApplyFilters(projFilter,empFilter,[week],builderFilter);
     }).catch(function(e){if(el)el.style.display='none';toast('Error: '+e.message)});
   }else{
     var from=(document.getElementById('anaFrom')||{}).value||'';
@@ -3263,7 +3294,7 @@ function anaLoad(){
       if(el)el.style.display='none';
       _repData=[].concat.apply([],arrays);
       _anaMyobCache={};weeksInRange.forEach(function(wk){_anaMyobCache[wk]=getMyobData(wk)});
-      _anaApplyFilters(projFilter,empFilter,weeksInRange);
+      _anaApplyFilters(projFilter,empFilter,weeksInRange,builderFilter);
     });
   }
 }
@@ -3271,13 +3302,14 @@ function anaRefilter(){
   if(!_repData||!_repData.length){anaLoad();return}
   var projFilter=(document.getElementById('anaProj')||{}).value||'';
   var empFilter=(document.getElementById('anaEmp')||{}).value||'';
-  _anaApplyFilters(projFilter,empFilter,window._anaWeeksList||[]);
+  var builderFilter=(document.getElementById('anaBuilder')||{}).value||'';
+  _anaApplyFilters(projFilter,empFilter,window._anaWeeksList||[],builderFilter);
 }
-function _anaApplyFilters(projFilter,empFilter,weeks){
+function _anaApplyFilters(projFilter,empFilter,weeks,builderFilter){
   var filtered=_repData;
   if(empFilter)filtered=filtered.filter(function(d){return d.employee===empFilter});
-  // Store filtered + project filter for sub-tabs
-  window._anaFiltered=filtered;window._anaProjFilter=projFilter;window._anaWeeksList=weeks;
+  // Store all filters for sub-tabs (builderFilter narrows jobs to that client/builder)
+  window._anaFiltered=filtered;window._anaProjFilter=projFilter;window._anaWeeksList=weeks;window._anaBuilderFilter=builderFilter||'';
   if(!filtered.length){document.getElementById('ana_sum').innerHTML='<div style="text-align:center;color:#aaa;padding:20px">No data found for selected filters.</div>';document.getElementById('anaTabs').style.display='';return}
   document.getElementById('anaTabs').style.display='';
   buildAllAnaTabs();
@@ -3328,7 +3360,20 @@ function togTD(i){var el=document.getElementById('td_'+i);if(el)el.style.display
 
 function buildAllAnaTabs(){
   var projFilter=window._anaProjFilter||'';
+  var builderFilter=window._anaBuilderFilter||'';
   var emps=window._anaFiltered||_repData;
+  /* Pre-build name -> builderId lookup so the main loop can gate jobs by builder
+     in O(1) without re-scanning jobDefs per task. */
+  var _jobBuilderId={};jobDefs.forEach(function(jd){if(jd&&jd.name)_jobBuilderId[jd.name]=jd.builderId||''});
+  /* When a builder filter is active, a job is only counted if (a) it's the
+     filter project, OR (b) projFilter is empty and the job belongs to the
+     filter builder. Without builder filter, the gate just enforces projFilter. */
+  function _jobPasses(name){
+    if(!name)return false;
+    if(projFilter&&name!==projFilter)return false;
+    if(builderFilter&&(_jobBuilderId[name]||'')!==builderFilter)return false;
+    return true;
+  }
   /* Resolve rate priority:
      1. If a project filter is active → use that project's hourlyRate (set in
         Projects → PROJECT DETAILS → RATE $/hr).
@@ -3381,8 +3426,9 @@ function buildAllAnaTabs(){
       if(day.leave)daySum[dk].leave++;
       var jobs=day.jobs||[];
       var dayFilteredH=0;
+      var anyJobFilter=!!(projFilter||builderFilter);
       jobs.forEach(function(j){
-        if(j.name&&(!projFilter||j.name===projFilter)){
+        if(_jobPasses(j.name)){
           if(!jobSum[j.name])jobSum[j.name]={hours:0,emps:{},tasks:{},days:{}};
           if(!daySum[dk].jobs[j.name])daySum[dk].jobs[j.name]=0;
           var jh=0;(j.tasks||[]).forEach(function(t){
@@ -3403,14 +3449,15 @@ function buildAllAnaTabs(){
           dayFilteredH+=jh;
         }
       });
-      // When project filter is active, only count hours from matching jobs
-      if(projFilter){filteredHrs+=dayFilteredH;daySum[dk].hours+=dayFilteredH;if(dayFilteredH>0)daySum[dk].emps[emp.employee]=true}
+      // When any job filter (project or builder) is active, only count matching-job hours
+      if(anyJobFilter){filteredHrs+=dayFilteredH;daySum[dk].hours+=dayFilteredH;if(dayFilteredH>0)daySum[dk].emps[emp.employee]=true}
       else{filteredHrs+=dayHrs;daySum[dk].hours+=dayHrs;daySum[dk].emps[emp.employee]=true}
     });
-    var effectiveHrs=projFilter?filteredHrs:hrs;
-    if(projFilter&&effectiveHrs===0)return; // skip employees with 0 hours on this project
+    var anyFilter=!!(projFilter||builderFilter);
+    var effectiveHrs=anyFilter?filteredHrs:hrs;
+    if(anyFilter&&effectiveHrs===0)return; // skip employees with 0 hours under the active filter
     var ot=Math.max(0,effectiveHrs-SETTINGS.weeklyHours);totH+=effectiveHrs;totOT+=ot;totLv+=lv;
-    empSum.push({name:emp.employee,hours:effectiveHrs,overtime:ot,leave:lv,days:emp.days,_projFilter:projFilter});
+    empSum.push({name:emp.employee,hours:effectiveHrs,overtime:ot,leave:lv,days:emp.days,_projFilter:projFilter,_builderFilter:builderFilter,_jobPasses:_jobPasses});
   });
   empSum.sort(function(a,b){return b.hours-a.hours});
   var jobArr=Object.keys(jobSum).map(function(k){return{name:k,hours:jobSum[k].hours,count:Object.keys(jobSum[k].emps).length,tasks:jobSum[k].tasks,days:jobSum[k].days,emps:jobSum[k].emps}}).sort(function(a,b){return b.hours-a.hours});
@@ -3422,18 +3469,19 @@ function buildAllAnaTabs(){
      rate with no project fallback — leave isn't billed to a job.
      Project-filter mode skips leave/top-up entirely (only matching project chunks). */
   var empCost={},jobCost={},taskCost={},totCost=0;
+  var anyJobFilter2=!!(projFilter||builderFilter);
   emps.forEach(function(emp){
     var jobHrsLocal={};var leaveH=0;
     emp.days.forEach(function(d){
-      if(d.leave){if(!projFilter)leaveH+=(d.hours||0);return}
+      if(d.leave){if(!anyJobFilter2)leaveH+=(d.hours||0);return}
       var workH=0;
       (d.jobs||[]).forEach(function(j){
         if(!j.name)return;
-        if(projFilter&&j.name!==projFilter)return;
+        if(!_jobPasses(j.name))return;
         var jh=0;(j.tasks||[]).forEach(function(t){jh+=t.hours||0});
         if(jh>0){jobHrsLocal[j.name]=(jobHrsLocal[j.name]||0)+jh;workH+=jh}
       });
-      if(!projFilter&&d.partialLeave){
+      if(!anyJobFilter2&&d.partialLeave){
         var totalWorkOnDay=0;(d.jobs||[]).forEach(function(jj){(jj.tasks||[]).forEach(function(tt){totalWorkOnDay+=tt.hours||0})});
         leaveH+=Math.max(0,(d.hours||0)-totalWorkOnDay);
       }
@@ -3540,7 +3588,11 @@ function buildAllAnaTabs(){
     var leaveDays=e.days.filter(function(d){return !!d.leave}).length;
     var avgDaily=workDays>0?e.hours/workDays:0;
     var pf=e._projFilter||'';
-    var empJobs={};e.days.forEach(function(d){(d.jobs||[]).forEach(function(j){if(j.name&&(!pf||j.name===pf)){if(!empJobs[j.name])empJobs[j.name]=0;(j.tasks||[]).forEach(function(t){empJobs[j.name]+=t.hours||0})}})});
+    var bf=e._builderFilter||'';
+    /* Use the closure _jobPasses (captured when empSum was pushed) so per-emp
+       day rendering respects both project and builder filters consistently. */
+    var jobPasses=e._jobPasses||function(n){return !!n&&(!pf||n===pf)&&(!bf||(_jobBuilderId[n]||'')===bf)};
+    var empJobs={};e.days.forEach(function(d){(d.jobs||[]).forEach(function(j){if(jobPasses(j.name)){if(!empJobs[j.name])empJobs[j.name]=0;(j.tasks||[]).forEach(function(t){empJobs[j.name]+=t.hours||0})}})});
     h+='<div class="det-card"><h5>'+esc(e.name)+' — '+e.hours.toFixed(1)+'h'+(e.overtime>0?' <span style="color:var(--red)">(+'+e.overtime.toFixed(1)+'h OT)</span>':'')+(hasCost?' <span style="color:var(--grn)">$'+(empCost[e.name]||0).toFixed(0)+'</span>':'')+'</h5>';
     h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">';
     h+='<span style="font-size:.72rem;background:var(--pri-lt);color:var(--pri);padding:2px 8px;border-radius:6px;font-weight:600">'+workDays+' work days</span>';
@@ -3551,19 +3603,19 @@ function buildAllAnaTabs(){
     h+='</div>';
     h+='<div class="det-row hdr"><span>Day</span><span>Job</span><span>Tasks</span><span>Hours</span></div>';
     e.days.forEach(function(d){
-      if(d.leave&&!pf){h+='<div class="det-row"><span>'+d.day.slice(0,3)+'</span><span colspan="2" style="color:var(--org)">'+d.leave+'</span><span>'+(d.hours||0).toFixed(1)+'h</span></div>';return}
-      var jobs=(d.jobs||[]).filter(function(j){return !pf||j.name===pf});
+      if(d.leave&&!pf&&!bf){h+='<div class="det-row"><span>'+d.day.slice(0,3)+'</span><span colspan="2" style="color:var(--org)">'+d.leave+'</span><span>'+(d.hours||0).toFixed(1)+'h</span></div>';return}
+      var jobs=(d.jobs||[]).filter(function(j){return jobPasses(j.name)});
       if(!jobs.length)return;
       var dayJobH=0;jobs.forEach(function(j){(j.tasks||[]).forEach(function(t){dayJobH+=t.hours||0})});
       jobs.forEach(function(j,ji){
         var taskStr=(j.tasks||[]).map(function(t){return t.name+(t.hours?' '+t.hours+'h':'')}).filter(Boolean).join(', ')||'\u2014';
         h+='<div class="det-row"><span>'+(ji===0?d.day.slice(0,3):'')+'</span><span style="color:var(--grn);font-weight:600">'+esc(j.name||'\u2014')+'</span><span>'+esc(taskStr)+'</span><span>'+(ji===0?dayJobH.toFixed(1)+'h':'')+'</span></div>';
       });
-      if(!pf&&d.partialLeave){
+      if(!pf&&!bf&&d.partialLeave){
         /* top-up = recorded daily total minus actual worked task hours.
            Falls back to (daily target - work) if d.hours wasn't stored.
-           Bug fix: previously used (daily - d.hours) which gave 0 because
-           d.hours already includes the top-up. */
+           Hidden when a project or builder filter is active — top-up isn't
+           billed to a specific job/builder. */
         var _daily=(SETTINGS?SETTINGS.dailyHours:8)||8;
         var _workH=dayJobH;
         var _topUp=(d.hours||0)>_workH?(d.hours-_workH):Math.max(0,_daily-_workH);
@@ -3870,6 +3922,17 @@ function anaExportXlsx(){
   if(typeof XLSX==='undefined'){toast('XLSX library loading...');return}
   var data=window._anaFiltered||_repData;if(!data.length){toast('No data to export');return}
   var projFilter=window._anaProjFilter||'';
+  var builderFilter=window._anaBuilderFilter||'';
+  /* Name -> builderId lookup so the export gates each job by builder filter
+     consistently with the in-page Analytics tabs. */
+  var _xJobBuilderId={};jobDefs.forEach(function(jd){if(jd&&jd.name)_xJobBuilderId[jd.name]=jd.builderId||''});
+  function _xJobPasses(name){
+    if(!name)return false;
+    if(projFilter&&name!==projFilter)return false;
+    if(builderFilter&&(_xJobBuilderId[name]||'')!==builderFilter)return false;
+    return true;
+  }
+  var _anyXFilter=!!(projFilter||builderFilter);
   /* Match the rate-resolution logic in buildAllAnaTabs: project filter wins */
   var rate=0;
   if(projFilter){
@@ -3924,10 +3987,10 @@ function anaExportXlsx(){
   data.forEach(function(emp){
     var hrs=0,lv=0,empCostAcc=0,empLeaveH=0;
     emp.days.forEach(function(day){
-      if(day.leave){lv++;if(!projFilter){hrs+=day.hours||0;empLeaveH+=day.hours||0}return}
+      if(day.leave){lv++;if(!_anyXFilter){hrs+=day.hours||0;empLeaveH+=day.hours||0}return}
       var workOnDay=0;
       (day.jobs||[]).forEach(function(j){
-        if(j.name&&(!projFilter||j.name===projFilter)){
+        if(_xJobPasses(j.name)){
           var jh=0;(j.tasks||[]).forEach(function(t){jh+=t.hours||0});
           hrs+=jh;
           var rJ=_rateForX(emp.employee,j.name);
@@ -3944,13 +4007,13 @@ function anaExportXlsx(){
         }
         (j.tasks||[]).forEach(function(t){workOnDay+=t.hours||0});
       });
-      if(!projFilter&&day.partialLeave){
+      if(!_anyXFilter&&day.partialLeave){
         var topUp=Math.max(0,(day.hours||0)-workOnDay);
         if(topUp>0)empLeaveH+=topUp;
       }
     });
-    if(!projFilter){hrs=0;emp.days.forEach(function(d){hrs+=d.hours||0})}
-    if(projFilter&&hrs===0)return;
+    if(!_anyXFilter){hrs=0;emp.days.forEach(function(d){hrs+=d.hours||0})}
+    if(_anyXFilter&&hrs===0)return;
     if(empLeaveH>0)empCostAcc+=empLeaveH*_rateForX(emp.employee,'');
     var ot=Math.max(0,hrs-SETTINGS.weeklyHours);xTotH+=hrs;xTotOT+=ot;xTotLv+=lv;xTotCost+=empCostAcc;
     xEmpSum.push({name:emp.employee,hours:hrs,overtime:ot,leave:lv,weekStart:emp.weekStart||'',cost:empCostAcc});
@@ -3993,8 +4056,8 @@ function anaExportXlsx(){
   var empRows=[empCols];
   data.forEach(function(emp){
     emp.days.forEach(function(d){
-      if(d.leave&&!projFilter){empRows.push([emp.employee,emp.weekStart||'',d.day,d.date,'',d.leave,d.hours||0,d.leave,d.partialLeave||'',d.notes||'']);return}
-      var jobs=(d.jobs||[]).filter(function(j){return !projFilter||j.name===projFilter});
+      if(d.leave&&!_anyXFilter){empRows.push([emp.employee,emp.weekStart||'',d.day,d.date,'',d.leave,d.hours||0,d.leave,d.partialLeave||'',d.notes||'']);return}
+      var jobs=(d.jobs||[]).filter(function(j){return _xJobPasses(j.name)});
       jobs.forEach(function(j){(j.tasks||[]).forEach(function(t){
         if(t.name||t.hours)empRows.push([emp.employee,emp.weekStart||'',d.day,d.date,j.name||'',t.name||'',t.hours||0,'',d.partialLeave||'',d.notes||''])
       })});
@@ -4052,13 +4115,13 @@ function anaExportXlsx(){
   data.forEach(function(emp){emp.days.forEach(function(d){
     if(!xDayMap[d.date])xDayMap[d.date]={day:d.day,hours:0,emps:{},jobs:{}};
     (d.jobs||[]).forEach(function(j){
-      if(j.name&&(!projFilter||j.name===projFilter)){
+      if(_xJobPasses(j.name)){
         var jh=0;(j.tasks||[]).forEach(function(t){jh+=t.hours||0});
         xDayMap[d.date].hours+=jh;xDayMap[d.date].emps[emp.employee]=true;
         xDayMap[d.date].jobs[j.name]=(xDayMap[d.date].jobs[j.name]||0)+jh;
       }
     });
-    if(!projFilter&&!Object.keys(xDayMap[d.date].jobs).length){xDayMap[d.date].hours+=d.hours||0;xDayMap[d.date].emps[emp.employee]=true}
+    if(!_anyXFilter&&!Object.keys(xDayMap[d.date].jobs).length){xDayMap[d.date].hours+=d.hours||0;xDayMap[d.date].emps[emp.employee]=true}
   })});
   Object.keys(xDayMap).sort().forEach(function(dk2){
     var dd=xDayMap[dk2];var jobStr=Object.keys(dd.jobs).map(function(j){return j+' ('+dd.jobs[j].toFixed(1)+'h)'}).join(', ');
