@@ -239,6 +239,37 @@ body.is-admin .emp-only{display:none!important}
 .ajc-add{display:flex;gap:6px;margin-top:6px}
 .ajc-add input{flex:1;padding:7px 10px;border:1.5px solid var(--bdr);border-radius:7px;font-size:.85rem}
 .ajc-add button{background:var(--pri);color:#fff;border:none;border-radius:7px;padding:7px 14px;font-weight:700;font-size:.82rem;white-space:nowrap}
+/* === BUILDER / CLIENT GROUPING — collapsible sections, builder header above project list === */
+.bld-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;background:#f5f7ff;border:1.5px dashed #c5cae9;border-radius:10px;margin-bottom:12px}
+.bld-toolbar .bld-tlbl{font-weight:800;color:var(--pri);font-size:.82rem;letter-spacing:.4px}
+.bld-toolbar input{flex:1;min-width:160px;padding:7px 10px;border:1.5px solid #c5cae9;border-radius:7px;font-size:.85rem;background:#fff}
+.bld-toolbar input:focus{outline:none;border-color:var(--pri)}
+.bld-toolbar button{background:var(--pri);color:#fff;border:none;border-radius:7px;padding:7px 14px;font-weight:700;font-size:.82rem}
+.bld-toolbar .hint{font-size:.7rem;color:#888;width:100%;line-height:1.3}
+.bld-grp{margin-bottom:14px;border:1.5px solid #d0d7e8;border-radius:12px;overflow:hidden;background:#fbfcff}
+.bld-grp.bld-grp-arc{opacity:.55}
+.bld-grp.bld-grp-ungrouped{border-style:dashed;background:#fff}
+.bld-grp-h{display:flex;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(135deg,#3f51b5,#5c6bc0);color:#fff;cursor:pointer;user-select:none}
+.bld-grp.bld-grp-ungrouped .bld-grp-h{background:#90a4ae}
+.bld-grp.bld-grp-arc .bld-grp-h{background:#bdbdbd}
+.bld-grp-h .bld-caret{font-size:.78rem;width:14px;text-align:center;transition:transform .2s}
+.bld-grp.open .bld-grp-h .bld-caret{transform:rotate(90deg)}
+.bld-grp-h .bld-name{font-weight:800;font-size:.95rem;letter-spacing:.5px;flex:1}
+.bld-grp-h .bld-count{font-size:.7rem;background:rgba(255,255,255,.2);border-radius:10px;padding:2px 9px;font-weight:700}
+.bld-grp-h .bld-actions{display:flex;gap:4px}
+.bld-grp-h .bld-actions button{background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:5px;padding:3px 8px;font-size:.72rem;font-weight:700;cursor:pointer}
+.bld-grp-h .bld-actions button:hover{background:rgba(255,255,255,.3)}
+.bld-grp-body{display:none;padding:8px 10px}
+.bld-grp.open .bld-grp-body{display:block}
+.bld-grp-body .ajc{margin-bottom:6px}
+.bld-empty{font-size:.78rem;color:#bbb;padding:10px;font-style:italic;text-align:center}
+/* Builder badge shown inline on each project card */
+.bld-badge{font-size:.62rem;font-weight:700;border-radius:4px;padding:1px 6px;letter-spacing:.3px;margin-left:6px;background:#e8eaf6;color:var(--pri)}
+.bld-badge.bld-badge-none{background:#eceff1;color:#90a4ae}
+/* Builder selector inside project details */
+.proj-bld-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 8px;background:#f5f7ff;border-radius:6px}
+.proj-bld-row label{font-size:.72rem;color:var(--pri);font-weight:700;white-space:nowrap}
+.proj-bld-row select{flex:1;padding:5px 8px;border:1.5px solid #c5cae9;border-radius:6px;font-size:.82rem;background:#fff}
 .adr{display:flex;gap:6px;margin-top:4px}.adr input{flex:1;padding:8px 10px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.88rem}
 .adr button{background:var(--pri);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700;white-space:nowrap}
 .admin-login{text-align:center;padding:36px 20px}
@@ -989,6 +1020,11 @@ var DS=['Wed','Thu','Fri','Sat','Sun','Mon','Tue'];
 var IW=[0,0,0,1,1,0,0];
 var ws=null;
 var jobDefs=[],defRate=0;
+/* === CLIENTS / BUILDERS — each project (jobDef) belongs to a builder/client.
+   The clients array is the parent list; each jobDef.builderId points to a client.
+   Stored in localStorage as ts_clients; synced to cloud alongside jobDefs/employees
+   via publishSync (Phase 2). Empty array if user hasn't set anything up yet. */
+var clients=[];
 
 function ldDefs(){
   try{jobDefs=JSON.parse(localStorage.getItem('ts_jobdefs')||'[]')}catch(e){jobDefs=[]}
@@ -996,8 +1032,34 @@ function ldDefs(){
   // migrate old task-only defs
   try{var old=JSON.parse(localStorage.getItem('ts_admin_tasks')||'[]');if(old.length&&!jobDefs.length){jobDefs=[{name:'General',tasks:old}];svDefs()}}catch(e){}
   try{defRate=parseFloat(localStorage.getItem('ts_rate'))||0}catch(e){defRate=0}
+  ldClients();_migrateClientsFromJobs();
 }
 function svDefs(){localStorage.setItem('ts_jobdefs',JSON.stringify(jobDefs))}
+/* Clients data layer (parallels employees / jobDefs) */
+function ldClients(){try{clients=JSON.parse(localStorage.getItem('ts_clients')||'[]');if(!Array.isArray(clients))clients=[]}catch(e){clients=[]}}
+function svClients(){localStorage.setItem('ts_clients',JSON.stringify(clients))}
+function genClientId(){return 'cl_'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4)}
+function findClient(id){if(!id)return null;for(var i=0;i<clients.length;i++)if(clients[i].id===id)return clients[i];return null}
+function findClientByName(nm){if(!nm)return null;var n=String(nm).toLowerCase().trim();for(var i=0;i<clients.length;i++)if(((clients[i].name||'').toLowerCase().trim())===n)return clients[i];return null}
+/* Auto-migrate existing jobs into builders by parsing the first word of each project
+   name. Only runs on jobs missing builderId, so it's idempotent and safe to re-run
+   after sync. Single-word projects (Factory, Office, Farm) stay ungrouped — those
+   are usually internal categories rather than client work. */
+function _migrateClientsFromJobs(){
+  if(!Array.isArray(clients))clients=[];
+  if(!Array.isArray(jobDefs)||jobDefs.length===0)return;
+  var changed=false;
+  jobDefs.forEach(function(j){
+    if(j.builderId)return;
+    var nm=(j.name||'').trim();if(!nm)return;
+    var parts=nm.split(/\s+/);if(parts.length<2)return;
+    var first=parts[0];
+    var c=findClientByName(first);
+    if(!c){c={id:genClientId(),name:first,status:'active'};clients.push(c);changed=true}
+    j.builderId=c.id;changed=true;
+  });
+  if(changed){svClients();svDefs()}
+}
 function getWed(f){var d=new Date(f);d.setHours(0,0,0,0);d.setDate(d.getDate()-((d.getDay()+4)%7));return d}
 function dk(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function fmtD(d){return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'})}
@@ -2389,9 +2451,65 @@ function renderAdmin(){
   if(document.getElementById('aRate'))document.getElementById('aRate').value=defRate||'';
   if(document.getElementById('rateShow'))document.getElementById('rateShow').textContent=defRate>0?'$'+defRate.toFixed(2)+'/hr':'';
   var ul=document.getElementById('aJobList');if(!ul)return;ul.innerHTML='';
-  // Build sorted index so cards render A-Z while ji still maps to jobDefs position
+  /* Builder toolbar — create new client/builder + count summary. */
+  var activeClients=clients.filter(function(c){return c.status!=='archived'});
+  var archivedClients=clients.filter(function(c){return c.status==='archived'});
+  var totalProj=jobDefs.length;
+  var bldToolbar='<div class="bld-toolbar"><span class="bld-tlbl">🏢 BUILDERS / CLIENTS</span>'+
+    '<input id="newBld" type="text" placeholder="New builder name (e.g. Kane Constructions)..." onkeydown="if(event.key===\'Enter\'){addClient();event.preventDefault()}">'+
+    '<button onclick="addClient()">+ Add Builder</button>'+
+    '<span class="hint">'+activeClients.length+' builder'+(activeClients.length===1?'':'s')+' · '+totalProj+' project'+(totalProj===1?'':'s')+'. Drag a project into a different builder by editing its <em>Builder</em> field inside the project card.</span>'+
+    '</div>';
+  ul.insertAdjacentHTML('beforeend',bldToolbar);
+  /* Build sorted index so cards within each group render A-Z while ji still maps to jobDefs position */
   var sortedIdx=jobDefs.map(function(_,i){return i}).sort(function(a,b){return (jobDefs[a].name||'').localeCompare(jobDefs[b].name||'')});
-  sortedIdx.forEach(function(ji){var job=jobDefs[ji];
+  /* Bucket job indices by builderId; '_none' bucket collects projects with no builder */
+  var byBuilder={};
+  sortedIdx.forEach(function(ji){var bid=jobDefs[ji].builderId;if(!bid||!findClient(bid))bid='_none';if(!byBuilder[bid])byBuilder[bid]=[];byBuilder[bid].push(ji)});
+  /* Render order: active builders A-Z, then archived A-Z, then Ungrouped (always last) */
+  var orderedBuilders=clients.slice().sort(function(a,b){
+    var aa=a.status==='archived'?1:0,bb=b.status==='archived'?1:0;
+    if(aa!==bb)return aa-bb;
+    return (a.name||'').localeCompare(b.name||'');
+  });
+  orderedBuilders.forEach(function(c){_renderBuilderGroup(ul,c,byBuilder[c.id]||[])});
+  if((byBuilder['_none']||[]).length){_renderBuilderGroup(ul,{id:'_none',name:'Ungrouped',status:'active',_isUngrouped:true},byBuilder['_none'])}
+  /* Existing per-card render lives below in _renderJobCard, called from _renderBuilderGroup. */
+  if(jobDefs.length===0)ul.insertAdjacentHTML('beforeend','<div style="color:#bbb;font-size:.85rem;padding:10px">No jobs defined yet. Add one below.</div>');
+  // Populate new-job type dropdown with dynamic tiers
+  var njt=document.getElementById('aNewJobType');
+  if(njt){var prev=njt.value;njt.innerHTML='';_getRateTiers().forEach(function(t){var o=document.createElement('option');o.value=t.id;o.textContent=t.name+' ($'+t.rate+'/hr)';njt.appendChild(o)});var co=document.createElement('option');co.value='custom';co.textContent='Custom Rate';njt.appendChild(co);if(prev)njt.value=prev}
+  showPubInfo();
+}
+/* Render one builder section — header (with caret + counts + actions) + body with project cards */
+function _renderBuilderGroup(ul,c,jobIdxs){
+  var isUngrouped=!!c._isUngrouped;
+  var isArchived=c.status==='archived';
+  var grp=document.createElement('div');
+  grp.className='bld-grp'+(isArchived?' bld-grp-arc':'')+(isUngrouped?' bld-grp-ungrouped':'')+' open';
+  var actions='';
+  if(!isUngrouped){
+    actions='<button title="Rename builder" onclick="event.stopPropagation();renameClient(\''+esc(c.id)+'\')">✎ Rename</button>'+
+      '<button title="'+(isArchived?'Reactivate':'Archive')+' builder" onclick="event.stopPropagation();toggleClientStatus(\''+esc(c.id)+'\')">'+(isArchived?'✓ Active':'⏸ Archive')+'</button>'+
+      '<button title="Delete builder" onclick="event.stopPropagation();deleteClient(\''+esc(c.id)+'\')">✕</button>';
+  }
+  grp.innerHTML='<div class="bld-grp-h" onclick="this.parentElement.classList.toggle(\'open\')">'+
+    '<span class="bld-caret">▶</span>'+
+    '<span class="bld-name">'+esc(c.name)+(isArchived?' (archived)':'')+'</span>'+
+    '<span class="bld-count">'+jobIdxs.length+' project'+(jobIdxs.length===1?'':'s')+'</span>'+
+    '<div class="bld-actions">'+actions+'</div>'+
+    '</div>'+
+    '<div class="bld-grp-body" id="bld_body_'+esc(c.id)+'"></div>';
+  ul.appendChild(grp);
+  var body=grp.querySelector('.bld-grp-body');
+  if(!jobIdxs.length){
+    body.innerHTML='<div class="bld-empty">No projects under this builder yet. Assign one by opening any project card and selecting this builder.</div>';
+    return;
+  }
+  jobIdxs.forEach(function(ji){_renderJobCard(body,ji)});
+}
+/* Original per-card render logic — moved out of renderAdmin so each builder section can call it. */
+function _renderJobCard(parent,ji){var job=jobDefs[ji];
     if(!job.status)job.status='active';
     var card=document.createElement('div');card.className='ajc';
     var budgetVal=job.budget||'';
@@ -2412,6 +2530,14 @@ function renderAdmin(){
       /* DETAILS toggle — collapsed by default, opens to reveal status/type/rate/budget/dates/address */
       '<div class="ajc-details-tog" id="ajdt_'+ji+'" onclick="togDetails('+ji+')"><span class="arr">\u25B6</span><span>\u2699 PROJECT DETAILS</span><span class="lbl-summary">'+esc(detailsSummary)+'</span></div>'+
       '<div class="ajc-details" id="ajd_'+ji+'">'+
+      /* Builder selector \u2014 moves the project between builders. "Ungrouped" clears builderId.
+         Selecting "+ New Builder..." prompts inline, creates it, and assigns it. */
+      '<div class="proj-bld-row"><label>\uD83C\uDFE2 BUILDER</label>'+
+      '<select onchange="setJobBuilder('+ji+',this.value)">'+
+      '<option value="">\u2014 Ungrouped \u2014</option>'+
+      clients.filter(function(c){return c.status!=='archived'}).slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'')}).map(function(c){return '<option value="'+esc(c.id)+'"'+(c.id===job.builderId?' selected':'')+'>'+esc(c.name)+'</option>'}).join('')+
+      '<option value="__new__">+ New Builder...</option>'+
+      '</select></div>'+
       '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:6px 8px;background:#f3f5fa;border-radius:6px"><label style="font-size:.72rem;color:#555;font-weight:700">STATUS</label><button onclick="toggleJobStatus('+ji+')" style="padding:5px 10px;border:none;border-radius:6px;font-weight:700;font-size:.74rem;background:'+(job.status==='archived'?'#e8e8e8;color:#888':'var(--grn-lt);color:var(--grn)')+'">'+(job.status==='archived'?'\u2715 Archived':'\u2713 Active')+'</button><span style="font-size:.7rem;color:#aaa">Archived jobs are hidden from the employee dropdown</span></div>'+
       '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:6px 8px;background:'+(pType==='eba'?'#e3f2fd':pType==='custom'?'#f3e5f5':'#fff8e1')+';border-radius:6px;flex-wrap:wrap"><label style="font-size:.72rem;color:'+(pType==='eba'?'#1565c0':pType==='custom'?'#7b1fa2':'var(--org)')+';font-weight:700;white-space:nowrap">PROJECT TYPE</label><select onchange="setJobType('+ji+',this.value)" style="padding:5px 8px;border:1.5px solid #ccc;border-radius:6px;font-size:.82rem;font-weight:600">'+_tiers.map(function(t){return'<option value="'+t.id+'"'+(pType===t.id?' selected':'')+'>'+esc(t.name)+' ($'+t.rate+'/hr)</option>'}).join('')+'<option value="custom"'+(pType==='custom'?' selected':'')+'>Custom Rate</option></select><label style="font-size:.72rem;color:#555;font-weight:700">RATE $/hr</label><input type="number" value="'+hrRate+'" min="0" step="0.01" style="width:80px;padding:5px 6px;border:1.5px solid #ccc;border-radius:6px;font-size:.85rem;text-align:center" onchange="setJobRate('+ji+',this.value)"></div>'+
       '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:6px 8px;background:#fff8e1;border-radius:6px"><label style="font-size:.72rem;color:var(--org);font-weight:700;white-space:nowrap">BUDGET HRS</label><input type="number" value="'+budgetVal+'" min="0" step="1" placeholder="e.g. 120" style="width:90px;padding:5px 6px;border:1.5px solid #ffe082;border-radius:6px;font-size:.85rem;text-align:center;background:#fffdf7" onchange="setJobBudget('+ji+',this.value)"><span style="font-size:.72rem;color:#aaa">hrs/week</span></div>'+
@@ -2433,13 +2559,75 @@ function renderAdmin(){
       '</div>'+
       '<div class="ajc-add"><input type="text" id="atio_'+ji+'" placeholder="New office-only task..." onkeydown="if(event.key===\'Enter\'){addOfficeTaskDef('+ji+',this);event.preventDefault()}"><button onclick="addOfficeTaskDef('+ji+',document.getElementById(\'atio_'+ji+'\'))" style="background:#7b1fa2">+ Office Task</button></div></div>'+
       '</div>';
-    ul.appendChild(card);
-  });
-  if(jobDefs.length===0)ul.innerHTML='<div style="color:#bbb;font-size:.85rem;padding:10px">No jobs defined yet. Add one below.</div>';
-  // Populate new-job type dropdown with dynamic tiers
-  var njt=document.getElementById('aNewJobType');
-  if(njt){var prev=njt.value;njt.innerHTML='';_getRateTiers().forEach(function(t){var o=document.createElement('option');o.value=t.id;o.textContent=t.name+' ($'+t.rate+'/hr)';njt.appendChild(o)});var co=document.createElement('option');co.value='custom';co.textContent='Custom Rate';njt.appendChild(co);if(prev)njt.value=prev}
-  showPubInfo();
+    parent.appendChild(card);
+}
+/* === Builder management — add/rename/archive/delete + reassign projects to a builder === */
+function addClient(){
+  var inp=document.getElementById('newBld');var nm=(inp&&inp.value||'').trim();
+  if(!nm){alert('Builder name required');if(inp)inp.focus();return}
+  if(findClientByName(nm)){alert('Builder "'+nm+'" already exists');if(inp)inp.select();return}
+  var c={id:genClientId(),name:nm,status:'active'};
+  clients.push(c);svClients();
+  try{audit('builder_add',{name:nm})}catch(e){}
+  if(inp)inp.value='';
+  toast('Builder added: '+nm);
+  renderAdmin();
+}
+function renameClient(id){
+  var c=findClient(id);if(!c)return;
+  var old=c.name;
+  var nv=prompt('Rename builder "'+old+'" to:',old);
+  if(nv===null)return;
+  nv=nv.trim();if(!nv){alert('Name cannot be empty');return}
+  if(nv===old)return;
+  var dup=findClientByName(nv);
+  if(dup&&dup.id!==id){alert('"'+nv+'" already exists');return}
+  c.name=nv;svClients();
+  try{audit('builder_rename',{from:old,to:nv})}catch(e){}
+  toast('Builder renamed: '+old+' → '+nv);
+  renderAdmin();
+}
+function toggleClientStatus(id){
+  var c=findClient(id);if(!c)return;
+  c.status=(c.status==='archived'?'active':'archived');
+  svClients();
+  toast('Builder '+(c.status==='archived'?'archived':'reactivated')+': '+c.name);
+  renderAdmin();
+}
+function deleteClient(id){
+  var c=findClient(id);if(!c)return;
+  var used=jobDefs.filter(function(j){return j.builderId===id});
+  if(used.length){
+    if(!confirm('Builder "'+c.name+'" has '+used.length+' project'+(used.length===1?'':'s')+' under it.\n\nDelete the builder and move those projects to "Ungrouped"?\n\n(The projects themselves and all timesheet history are kept.)'))return;
+    used.forEach(function(j){delete j.builderId});
+    svDefs();
+  }else{
+    if(!confirm('Delete builder "'+c.name+'"?'))return;
+  }
+  var idx=clients.indexOf(c);if(idx!==-1)clients.splice(idx,1);
+  svClients();
+  try{audit('builder_delete',{name:c.name,reassigned:used.length})}catch(e){}
+  toast('Builder deleted: '+c.name+(used.length?' ('+used.length+' project'+(used.length===1?'':'s')+' moved to Ungrouped)':''));
+  renderAdmin();
+}
+function setJobBuilder(ji,value){
+  var job=jobDefs[ji];if(!job)return;
+  if(value==='__new__'){
+    var nm=prompt('New builder name:','');
+    if(nm===null){renderAdmin();return}
+    nm=nm.trim();if(!nm){renderAdmin();return}
+    var existing=findClientByName(nm);
+    if(existing){job.builderId=existing.id}
+    else{var c={id:genClientId(),name:nm,status:'active'};clients.push(c);svClients();job.builderId=c.id}
+    svDefs();toast('Project moved to builder: '+nm);
+    renderAdmin();
+    return;
+  }
+  if(value){job.builderId=value}else{delete job.builderId}
+  svDefs();
+  try{audit('job_builder',{job:job.name,builder:value?(findClient(value)||{}).name:'(Ungrouped)'})}catch(e){}
+  toast('Project '+(value?'moved to '+(findClient(value)||{}).name:'moved to Ungrouped'));
+  renderAdmin();
 }
 function togAdmin(el,ji){
   var b=document.getElementById('ajcb_'+ji);
@@ -2489,7 +2677,76 @@ function _doRenameJob(ji,nv){
   /* Push to cloud silently so employee phones see the rename without admin
      having to click Publish (which would otherwise leave employees on stale names). */
   try{if(typeof pushEmpsSilently==='function')pushEmpsSilently()}catch(e){}
-  toast('Job renamed: '+oldName+' \u2192 '+nv+(migrated?' ('+migrated+' employee'+(migrated===1?'':'s')+' updated)':''));
+  try{if(typeof audit==='function')audit('job_rename',{from:oldName,to:nv})}catch(e){}
+  toast('Renaming "'+oldName+'" \u2192 "'+nv+'" everywhere...');
+  /* Rewrite local drafts on this device + every historical timesheet in the cloud,
+     mirroring the task-rename propagation. Without this, Analytics keeps showing
+     the old name for any week submitted before the rename. */
+  _renameJobLocal(oldName,nv);
+  _propagateJobRename(oldName,nv,function(n){
+    if(n<0)toast('\u26a0\ufe0f Job renamed locally \u2014 cloud history update failed');
+    else if(n===0)toast('\u2713 Job renamed: '+oldName+' \u2192 '+nv+(migrated?' ('+migrated+' employee'+(migrated===1?'':'s')+' updated)':'')+' \u2014 no historical entries');
+    else toast('\u2713 Job renamed \u2014 updated '+n+' timesheet'+(n===1?'':'s')+' in cloud');
+  });
+}
+/* Rewrite job name in every localStorage ts_* draft for this browser (parallels _renameTaskLocal) */
+function _renameJobLocal(oldName,newName){
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var key=localStorage.key(i);
+      if(!key||key.indexOf('ts_')!==0)continue;
+      // Day-data keys only; skip meta/config/cache keys
+      if(key.indexOf('ts_meta_')===0||key.indexOf('ts_jobdefs')===0||key.indexOf('ts_empName')===0||key.indexOf('ts_rate')===0||key.indexOf('ts_currentEmp')===0||key.indexOf('ts_currentWeek')===0||key.indexOf('ts_pin')===0||key.indexOf('ts_sync_')===0||key.indexOf('ts_last_sync')===0||key.indexOf('ts_offline_')===0||key.indexOf('ts_admin_')===0||key.indexOf('ts_audit_')===0||key.indexOf('ts_settings')===0||key.indexOf('ts_emps')===0||key.indexOf('ts_rate_tiers')===0||key.indexOf('ts_myob_')===0||key.indexOf('ts_reminder_')===0)continue;
+      var raw=localStorage.getItem(key);if(!raw)continue;
+      try{
+        var obj=JSON.parse(raw);if(!obj||typeof obj!=='object')continue;
+        var changed=false;
+        Object.keys(obj).forEach(function(dk){
+          var day=obj[dk];if(!day||!day.jobs)return;
+          day.jobs.forEach(function(j){if(j.name===oldName){j.name=newName;changed=true}});
+        });
+        if(changed)localStorage.setItem(key,JSON.stringify(obj));
+      }catch(e){}
+    }
+  }catch(e){}
+}
+/* Fetch every week from cloud, rewrite matching job names, and re-post any that changed.
+   Mirrors _propagateTaskRename. Callback receives (count: >=0 ok, -1 failure). */
+function _propagateJobRename(oldName,newName,cb){
+  fetch(SYNC_URL+'/weeks').then(function(r){return r.json()}).then(function(res){
+    var weeks=(res.weeks||[]);
+    if(!weeks.length){cb&&cb(0);return}
+    var updates=[];
+    var fetches=weeks.map(function(wk){
+      return fetch(SYNC_URL+'/timesheets?week='+wk).then(function(r){return r.json()}).then(function(j){
+        (j.timesheets||[]).filter(function(t){return !_isSystemRecord(t)}).forEach(function(ts){
+          var d=ts.data||ts;
+          var changed=false;
+          (d.days||[]).forEach(function(day){
+            (day.jobs||[]).forEach(function(job){if(job.name===oldName){job.name=newName;changed=true}});
+          });
+          if(changed){
+            var totH=0;(d.days||[]).forEach(function(dd){totH+=dd.hours||0});
+            var body={employee:d.employee,weekStart:d.weekStart||wk,data:d,totalHours:totH,status:d.status||'draft'};
+            if(d.employeeId)body.employeeId=d.employeeId;
+            if(d.submittedAt)body.submittedAt=d.submittedAt;
+            if(d.approvedAt){body.approvedAt=d.approvedAt;body.approvedBy=d.approvedBy}
+            updates.push(body);
+          }
+        });
+      }).catch(function(){});
+    });
+    Promise.all(fetches).then(function(){
+      if(!updates.length){cb&&cb(0);return}
+      var done=0,ok=0;
+      updates.forEach(function(body){
+        fetch(SYNC_URL+'/timesheet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+          .then(function(r){return r.json()}).then(function(){ok++})
+          .catch(function(){})
+          .finally(function(){done++;if(done===updates.length)cb&&cb(ok)});
+      });
+    });
+  }).catch(function(){cb&&cb(-1)});
 }
 /* Back-compat: old inline-edit input still calls renameJob(ji,inp) on blur. */
 function renameJob(ji,inp){
@@ -3044,6 +3301,24 @@ function buildAllAnaTabs(){
     Object.keys(myobAll).forEach(function(wk){var m=myobAll[wk]||{};var d=m[emp.id];if(d){totalGross+=(d.gross||0);totalHrs+=(d.hours||0)}});
     if(totalGross>0){var role=emp.role||'worker';var hrRate=emp.hourlyRate||55;var c=calcWageCost(totalGross,hrRate,totalHrs||40,role,'non_eba');empCostMap[emp.name]={total:c.total,perHour:c.perHour,gross:totalGross}}
   });
+  /* Per-employee resolved rate, in priority order:
+       1. MYOB perHour (true cost incl. on-costs) — already computed in empCostMap
+       2. Employee custom rate (employees[].hourlyRate) — overrides project rate
+       3. (per-chunk fallback by _rateFor: project hourlyRate, then defRate)
+     Changing an employee's custom rate immediately re-prices their hours across
+     every Analytics tab — Summary, By Employee, By Job, By Task, OT alerts. */
+  var empResolvedRate={};employees.forEach(function(emp){
+    var info=empCostMap[emp.name];
+    if(info&&info.perHour>0){empResolvedRate[emp.name]={rate:info.perHour,source:'myob'};return}
+    if(parseFloat(emp.hourlyRate)>0){empResolvedRate[emp.name]={rate:parseFloat(emp.hourlyRate),source:'custom'};return}
+    empResolvedRate[emp.name]={rate:0,source:''};
+  });
+  function _rateFor(empName,jobName){
+    var info=empResolvedRate[empName];
+    if(info&&info.rate>0)return info.rate;
+    if(jobName){var j=jobDefs.find(function(x){return x.name===jobName});if(j&&parseFloat(j.hourlyRate)>0)return parseFloat(j.hourlyRate)}
+    return rate||defRate||0;
+  }
   var empSum=[],jobSum={},daySum={},taskSum={},totH=0,totOT=0,totLv=0;
   var weekLabel=emps.length?(emps[0].weekStart||'')+' to '+(emps[0].weekEnd||''):'(no data)';
 
@@ -3091,7 +3366,45 @@ function buildAllAnaTabs(){
   var jobArr=Object.keys(jobSum).map(function(k){return{name:k,hours:jobSum[k].hours,count:Object.keys(jobSum[k].emps).length,tasks:jobSum[k].tasks,days:jobSum[k].days,emps:jobSum[k].emps}}).sort(function(a,b){return b.hours-a.hours});
   var taskArr=Object.keys(taskSum).map(function(k){return taskSum[k]}).sort(function(a,b){return b.hours-a.hours});
   var dayArr=Object.keys(daySum).sort().map(function(k){return daySum[k]});
-  var totCost=rate?totH*rate:0;
+  /* Build per-emp / per-job / per-task cost using the priority rate.
+     For each (emp, job) chunk: hours × _rateFor(emp, job).
+     Leave hours (full-day leave + partial-leave top-up) get the emp's resolved
+     rate with no project fallback — leave isn't billed to a job.
+     Project-filter mode skips leave/top-up entirely (only matching project chunks). */
+  var empCost={},jobCost={},taskCost={},totCost=0;
+  emps.forEach(function(emp){
+    var jobHrsLocal={};var leaveH=0;
+    emp.days.forEach(function(d){
+      if(d.leave){if(!projFilter)leaveH+=(d.hours||0);return}
+      var workH=0;
+      (d.jobs||[]).forEach(function(j){
+        if(!j.name)return;
+        if(projFilter&&j.name!==projFilter)return;
+        var jh=0;(j.tasks||[]).forEach(function(t){jh+=t.hours||0});
+        if(jh>0){jobHrsLocal[j.name]=(jobHrsLocal[j.name]||0)+jh;workH+=jh}
+      });
+      if(!projFilter&&d.partialLeave){
+        var totalWorkOnDay=0;(d.jobs||[]).forEach(function(jj){(jj.tasks||[]).forEach(function(tt){totalWorkOnDay+=tt.hours||0})});
+        leaveH+=Math.max(0,(d.hours||0)-totalWorkOnDay);
+      }
+    });
+    var sub=0;
+    Object.keys(jobHrsLocal).forEach(function(jn){
+      var r=_rateFor(emp.employee,jn);var c=jobHrsLocal[jn]*r;
+      sub+=c;jobCost[jn]=(jobCost[jn]||0)+c;
+    });
+    if(leaveH>0)sub+=leaveH*_rateFor(emp.employee,'');
+    empCost[emp.employee]=(empCost[emp.employee]||0)+sub;
+    totCost+=sub;
+  });
+  Object.keys(taskSum).forEach(function(tk){
+    var t=taskSum[tk];var c=0;
+    Object.keys(t.emps).forEach(function(en){c+=t.emps[en]*_rateFor(en,t.job)});
+    taskCost[tk]=c;
+  });
+  /* Show Cost columns whenever ANY cost was computed (per-emp custom, MYOB, project, or defRate).
+     This replaces the old "if rate" gating which only checked the single global rate. */
+  var hasCost=totCost>0;
   var avgH=emps.length?totH/emps.length:0;
   var regH=Math.max(0,totH-totOT);
 
@@ -3133,19 +3446,24 @@ function buildAllAnaTabs(){
     h+='</div></div></div>';
   }
 
-  // Employee table
-  h+='<table class="rtbl"><thead><tr><th>Employee</th><th>Reg</th><th>OT</th><th>Total</th>'+(rate?'<th>Cost</th>':'')+'</tr></thead><tbody>';
-  empSum.forEach(function(e){var reg=Math.min(e.hours,SETTINGS.weeklyHours);h+='<tr><td>'+esc(e.name)+'</td><td>'+reg.toFixed(1)+'h</td><td'+(e.overtime>0?' class="ot"':'')+'>'+(e.overtime>0?'+'+e.overtime.toFixed(1)+'h':'-')+'</td><td><strong>'+e.hours.toFixed(1)+'h</strong></td>'+(rate?'<td style="color:var(--grn)">$'+(e.hours*rate).toFixed(0)+'</td>':'')+'</tr>'});
-  h+='<tr class="trow"><td>TOTAL</td><td>'+regH.toFixed(1)+'h</td><td>'+totOT.toFixed(1)+'h</td><td>'+totH.toFixed(1)+'h</td>'+(rate?'<td style="color:var(--grn)">$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
+  // Employee table — Cost column uses each emp's resolved rate (MYOB > custom > project > defRate)
+  h+='<table class="rtbl"><thead><tr><th>Employee</th><th>Reg</th><th>OT</th><th>Total</th>'+(hasCost?'<th>Cost</th>':'')+'</tr></thead><tbody>';
+  empSum.forEach(function(e){var reg=Math.min(e.hours,SETTINGS.weeklyHours);h+='<tr><td>'+esc(e.name)+'</td><td>'+reg.toFixed(1)+'h</td><td'+(e.overtime>0?' class="ot"':'')+'>'+(e.overtime>0?'+'+e.overtime.toFixed(1)+'h':'-')+'</td><td><strong>'+e.hours.toFixed(1)+'h</strong></td>'+(hasCost?'<td style="color:var(--grn)">$'+(empCost[e.name]||0).toFixed(0)+'</td>':'')+'</tr>'});
+  h+='<tr class="trow"><td>TOTAL</td><td>'+regH.toFixed(1)+'h</td><td>'+totOT.toFixed(1)+'h</td><td>'+totH.toFixed(1)+'h</td>'+(hasCost?'<td style="color:var(--grn)">$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
 
-  // Cost breakdown by job (if rate set)
-  if(rate&&jobArr.length){
+  // Cost breakdown by job — each job's cost = sum over emps of (emp_hrs_on_job × _rateFor(emp,job))
+  if(hasCost&&jobArr.length){
     h+='<div class="rep-chart"><div class="rep-chart-title">Labor Cost by Job</div>';
     h+='<table class="rtbl grn"><thead><tr><th>Job</th><th>Hours</th><th>People</th><th>Cost</th>'+(budgets?'<th>Budget</th>':'')+'</tr></thead><tbody>';
     jobArr.forEach(function(j){
-      var cost=j.hours*rate;
+      var cost=jobCost[j.name]||0;
       var bg=budgets[j.name]||0;
-      var budgetCost=bg?bg*rate:0;
+      /* Budget cost uses the job's own hourlyRate as a "list price" estimate.
+         (We don't know which mix of employees will fill the budget — project rate
+         is the planning baseline.) Falls back to global rate if job has none. */
+      var _jobDef=jobDefs.find(function(jd){return jd.name===j.name});
+      var _jobRate=(_jobDef&&parseFloat(_jobDef.hourlyRate)>0)?parseFloat(_jobDef.hourlyRate):(rate||defRate||0);
+      var budgetCost=bg?bg*_jobRate:0;
       h+='<tr><td style="font-weight:600">'+esc(j.name)+'</td><td>'+j.hours.toFixed(1)+'h</td><td>'+j.count+'</td><td style="color:var(--grn);font-weight:700">$'+cost.toFixed(0)+'</td>';
       if(budgets){
         if(bg){
@@ -3159,9 +3477,9 @@ function buildAllAnaTabs(){
     h+='</div>';
   }
 
-  // OT alerts
+  // OT alerts — extra cost uses each emp's resolved rate (falls back to global if no MYOB/custom)
   var otE=empSum.filter(function(e){return e.overtime>0});
-  if(otE.length)h+='<div class="alert-box"><div class="ab-title">&#9888; Overtime Alert</div>'+otE.map(function(e){return '<div class="ab-item">'+esc(e.name)+': '+e.hours.toFixed(1)+'h ('+e.overtime.toFixed(1)+'h OT'+(rate?' = $'+(e.overtime*rate).toFixed(0)+' extra':'')+')</div>'}).join('')+'</div>';
+  if(otE.length)h+='<div class="alert-box"><div class="ab-title">&#9888; Overtime Alert</div>'+otE.map(function(e){var _otR=((empResolvedRate[e.name]||{}).rate)||rate||defRate||0;return '<div class="ab-item">'+esc(e.name)+': '+e.hours.toFixed(1)+'h ('+e.overtime.toFixed(1)+'h OT'+(_otR>0?' = $'+(e.overtime*_otR).toFixed(0)+' extra':'')+')</div>'}).join('')+'</div>';
   document.getElementById('ana_sum').innerHTML=h;
 
   // === BY EMPLOYEE TAB (enhanced) ===
@@ -3173,7 +3491,7 @@ function buildAllAnaTabs(){
     var avgDaily=workDays>0?e.hours/workDays:0;
     var pf=e._projFilter||'';
     var empJobs={};e.days.forEach(function(d){(d.jobs||[]).forEach(function(j){if(j.name&&(!pf||j.name===pf)){if(!empJobs[j.name])empJobs[j.name]=0;(j.tasks||[]).forEach(function(t){empJobs[j.name]+=t.hours||0})}})});
-    h+='<div class="det-card"><h5>'+esc(e.name)+' — '+e.hours.toFixed(1)+'h'+(e.overtime>0?' <span style="color:var(--red)">(+'+e.overtime.toFixed(1)+'h OT)</span>':'')+(rate?' <span style="color:var(--grn)">$'+(e.hours*rate).toFixed(0)+'</span>':'')+'</h5>';
+    h+='<div class="det-card"><h5>'+esc(e.name)+' — '+e.hours.toFixed(1)+'h'+(e.overtime>0?' <span style="color:var(--red)">(+'+e.overtime.toFixed(1)+'h OT)</span>':'')+(hasCost?' <span style="color:var(--grn)">$'+(empCost[e.name]||0).toFixed(0)+'</span>':'')+'</h5>';
     h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">';
     h+='<span style="font-size:.72rem;background:var(--pri-lt);color:var(--pri);padding:2px 8px;border-radius:6px;font-weight:600">'+workDays+' work days</span>';
     if(leaveDays)h+='<span style="font-size:.72rem;background:var(--org-lt);color:var(--org);padding:2px 8px;border-radius:6px;font-weight:600">'+leaveDays+' leave</span>';
@@ -3191,7 +3509,16 @@ function buildAllAnaTabs(){
         var taskStr=(j.tasks||[]).map(function(t){return t.name+(t.hours?' '+t.hours+'h':'')}).filter(Boolean).join(', ')||'\u2014';
         h+='<div class="det-row"><span>'+(ji===0?d.day.slice(0,3):'')+'</span><span style="color:var(--grn);font-weight:600">'+esc(j.name||'\u2014')+'</span><span>'+esc(taskStr)+'</span><span>'+(ji===0?dayJobH.toFixed(1)+'h':'')+'</span></div>';
       });
-      if(!pf&&d.partialLeave){var plGap=((SETTINGS?SETTINGS.dailyHours:8)||8)-(d.hours||0);h+='<div class="det-row"><span></span><span style="color:#b8860b;font-style:italic">+'+d.partialLeave+'</span><span style="color:#b8860b">'+(d.partialLeave==='Unpaid Leave'?'0h':plGap.toFixed(1)+'h')+' top-up</span><span></span></div>'}
+      if(!pf&&d.partialLeave){
+        /* top-up = recorded daily total minus actual worked task hours.
+           Falls back to (daily target - work) if d.hours wasn't stored.
+           Bug fix: previously used (daily - d.hours) which gave 0 because
+           d.hours already includes the top-up. */
+        var _daily=(SETTINGS?SETTINGS.dailyHours:8)||8;
+        var _workH=dayJobH;
+        var _topUp=(d.hours||0)>_workH?(d.hours-_workH):Math.max(0,_daily-_workH);
+        h+='<div class="det-row"><span></span><span style="color:#b8860b;font-style:italic">+'+d.partialLeave+'</span><span style="color:#b8860b">'+(d.partialLeave==='Unpaid Leave'?'0h':_topUp.toFixed(1)+'h')+' top-up</span><span></span></div>'
+      }
     });
     h+='</div>';
   });
@@ -3202,7 +3529,7 @@ function buildAllAnaTabs(){
   jobArr.forEach(function(j){
     var bg=budgets[j.name]||0;var pct=bg>0?Math.min((j.hours/bg)*100,150):0;
     var cls=pct<=80?'ok':(pct<=100?'warn':'over');
-    h+='<div class="det-card"><h5 style="color:var(--grn)">'+esc(j.name)+' \u2014 '+j.hours.toFixed(1)+'h <span style="font-weight:400;color:#888">('+j.count+' people)</span>'+(rate?' <span style="color:var(--grn)">$'+(j.hours*rate).toFixed(0)+'</span>':'')+'</h5>';
+    h+='<div class="det-card"><h5 style="color:var(--grn)">'+esc(j.name)+' \u2014 '+j.hours.toFixed(1)+'h <span style="font-weight:400;color:#888">('+j.count+' people)</span>'+(hasCost?' <span style="color:var(--grn)">$'+(jobCost[j.name]||0).toFixed(0)+'</span>':'')+'</h5>';
     if(bg>0){
       h+='<div class="bbar"><div class="bbar-fill '+cls+'" style="width:'+Math.min(pct,100)+'%"></div><span class="bbar-lbl">'+j.hours.toFixed(1)+' / '+bg+'h</span></div>';
       if(pct>100)h+='<div style="font-size:.72rem;color:var(--red);font-weight:700;margin:2px 0">OVER BUDGET by '+(j.hours-bg).toFixed(1)+'h</div>';
@@ -3241,13 +3568,14 @@ function buildAllAnaTabs(){
   }
   h+='</div>';
   // Full task table
-  h+='<table class="rtbl grn"><thead><tr><th>Job</th><th>Task</th><th>Hours</th><th>People</th><th>% of Total</th>'+(rate?'<th>Cost</th>':'')+'</tr></thead><tbody>';
+  h+='<table class="rtbl grn"><thead><tr><th>Job</th><th>Task</th><th>Hours</th><th>People</th><th>% of Total</th>'+(hasCost?'<th>Cost</th>':'')+'</tr></thead><tbody>';
   taskArr.forEach(function(t){
     var people=Object.keys(t.emps).length;
     var pct=totH>0?((t.hours/totH)*100):0;
-    h+='<tr><td style="color:var(--pri);font-weight:600">'+esc(t.job)+'</td><td>'+esc(t.task)+'</td><td><strong>'+t.hours.toFixed(1)+'h</strong></td><td>'+people+'</td><td>'+pct.toFixed(1)+'%</td>'+(rate?'<td style="color:var(--grn)">$'+(t.hours*rate).toFixed(0)+'</td>':'')+'</tr>';
+    var _tc=taskCost[t.job+' > '+t.task]||0;
+    h+='<tr><td style="color:var(--pri);font-weight:600">'+esc(t.job)+'</td><td>'+esc(t.task)+'</td><td><strong>'+t.hours.toFixed(1)+'h</strong></td><td>'+people+'</td><td>'+pct.toFixed(1)+'%</td>'+(hasCost?'<td style="color:var(--grn)">$'+_tc.toFixed(0)+'</td>':'')+'</tr>';
   });
-  h+='<tr class="trow"><td colspan="2">TOTAL</td><td>'+totH.toFixed(1)+'h</td><td>'+emps.length+'</td><td>100%</td>'+(rate?'<td>$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
+  h+='<tr class="trow"><td colspan="2">TOTAL</td><td>'+totH.toFixed(1)+'h</td><td>'+emps.length+'</td><td>100%</td>'+(hasCost?'<td>$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
   // Per-task employee detail (expandable)
   taskArr.forEach(function(t,ti){
     var empArr=Object.keys(t.emps).map(function(k){return{name:k,hours:t.emps[k]}}).sort(function(a,b){return b.hours-a.hours});
@@ -3298,7 +3626,7 @@ function buildAllAnaTabs(){
   if(otE.length){
     alertCount+=otE.length;
     h+='<div class="alert-box"><div class="ab-title">&#9888; Overtime ('+otE.length+' employees)</div>';
-    otE.forEach(function(e){h+='<div class="ab-item">'+esc(e.name)+': '+e.hours.toFixed(1)+'h total ('+e.overtime.toFixed(1)+'h overtime'+(rate?' = $'+(e.overtime*rate).toFixed(0)+' extra cost':'')+')</div>'});
+    otE.forEach(function(e){var _otR=((empResolvedRate[e.name]||{}).rate)||rate||defRate||0;h+='<div class="ab-item">'+esc(e.name)+': '+e.hours.toFixed(1)+'h total ('+e.overtime.toFixed(1)+'h overtime'+(_otR>0?' = $'+(e.overtime*_otR).toFixed(0)+' extra cost':'')+')</div>'});
     h+='</div>';
   }
   // Under-hours alerts
@@ -3500,6 +3828,26 @@ function anaExportXlsx(){
   }
   if(!rate)rate=defRate;
   if(!rate)data.forEach(function(e){if(e.rate)rate=e.rate});
+  /* Per-employee resolved rate (MYOB > custom > project > defRate) — mirrors buildAllAnaTabs.
+     Without this, the export uses a single global rate and ignores per-emp customRate. */
+  var myobAllX=_anaMyobCache||{};
+  var empResolvedRateX={};employees.forEach(function(emp){
+    var totalGross=0,totalHrs=0;
+    Object.keys(myobAllX).forEach(function(wk){var m=myobAllX[wk]||{};var d=m[emp.id];if(d){totalGross+=(d.gross||0);totalHrs+=(d.hours||0)}});
+    if(totalGross>0&&totalHrs>0){
+      var role=emp.role||'worker';var hrRate=emp.hourlyRate||55;
+      var c=calcWageCost(totalGross,hrRate,totalHrs||40,role,'non_eba');
+      empResolvedRateX[emp.name]={rate:c.perHour,source:'myob'};return;
+    }
+    if(parseFloat(emp.hourlyRate)>0){empResolvedRateX[emp.name]={rate:parseFloat(emp.hourlyRate),source:'custom'};return}
+    empResolvedRateX[emp.name]={rate:0,source:''};
+  });
+  function _rateForX(empName,jobName){
+    var info=empResolvedRateX[empName];
+    if(info&&info.rate>0)return info.rate;
+    if(jobName){var j=jobDefs.find(function(x){return x.name===jobName});if(j&&parseFloat(j.hourlyRate)>0)return parseFloat(j.hourlyRate)}
+    return rate||defRate||0;
+  }
   var wb=XLSX.utils.book_new();
 
   // Style helpers
@@ -3520,29 +3868,46 @@ function anaExportXlsx(){
   function _styleCol(ws,col,style,startRow,endRow){for(var r=startRow;r<=endRow;r++){var ref=XLSX.utils.encode_cell({r:r,c:col});if(ws[ref])ws[ref].s=style}}
   function _styleRow(ws,row,cols,style){for(var c=0;c<cols;c++){var ref=XLSX.utils.encode_cell({r:row,c:c});if(ws[ref])ws[ref].s=style;else{ws[ref]={v:'',t:'s',s:style}}}}
 
-  // --- Recalculate summary stats ---
-  var xEmpSum=[],xJobSum={},xTotH=0,xTotOT=0,xTotLv=0;
+  // --- Recalculate summary stats (with per-emp/per-job/per-task cost using _rateForX) ---
+  var xEmpSum=[],xJobSum={},xTotH=0,xTotOT=0,xTotLv=0,xTotCost=0;
+  var xTaskCost={}; // 'job > task' -> cost
   data.forEach(function(emp){
-    var hrs=0,lv=0;
+    var hrs=0,lv=0,empCostAcc=0,empLeaveH=0;
     emp.days.forEach(function(day){
-      if(day.leave){lv++;if(!projFilter)hrs+=day.hours||0;return}
+      if(day.leave){lv++;if(!projFilter){hrs+=day.hours||0;empLeaveH+=day.hours||0}return}
+      var workOnDay=0;
       (day.jobs||[]).forEach(function(j){
         if(j.name&&(!projFilter||j.name===projFilter)){
           var jh=0;(j.tasks||[]).forEach(function(t){jh+=t.hours||0});
           hrs+=jh;
-          if(!xJobSum[j.name])xJobSum[j.name]={hours:0,emps:{},tasks:{}};
-          xJobSum[j.name].hours+=jh;xJobSum[j.name].emps[emp.employee]=true;
-          (j.tasks||[]).forEach(function(t){var tn=t.name||'(other)';if(!xJobSum[j.name].tasks[tn])xJobSum[j.name].tasks[tn]=0;xJobSum[j.name].tasks[tn]+=t.hours||0});
+          var rJ=_rateForX(emp.employee,j.name);
+          empCostAcc+=jh*rJ;
+          if(!xJobSum[j.name])xJobSum[j.name]={hours:0,emps:{},tasks:{},cost:0};
+          xJobSum[j.name].hours+=jh;xJobSum[j.name].emps[emp.employee]=true;xJobSum[j.name].cost+=jh*rJ;
+          (j.tasks||[]).forEach(function(t){
+            var tn=t.name||'(other)';var th=t.hours||0;
+            if(!xJobSum[j.name].tasks[tn])xJobSum[j.name].tasks[tn]=0;
+            xJobSum[j.name].tasks[tn]+=th;
+            var tk=j.name+' > '+tn;
+            xTaskCost[tk]=(xTaskCost[tk]||0)+th*rJ;
+          });
         }
+        (j.tasks||[]).forEach(function(t){workOnDay+=t.hours||0});
       });
+      if(!projFilter&&day.partialLeave){
+        var topUp=Math.max(0,(day.hours||0)-workOnDay);
+        if(topUp>0)empLeaveH+=topUp;
+      }
     });
     if(!projFilter){hrs=0;emp.days.forEach(function(d){hrs+=d.hours||0})}
     if(projFilter&&hrs===0)return;
-    var ot=Math.max(0,hrs-SETTINGS.weeklyHours);xTotH+=hrs;xTotOT+=ot;xTotLv+=lv;
-    xEmpSum.push({name:emp.employee,hours:hrs,overtime:ot,leave:lv,weekStart:emp.weekStart||''});
+    if(empLeaveH>0)empCostAcc+=empLeaveH*_rateForX(emp.employee,'');
+    var ot=Math.max(0,hrs-SETTINGS.weeklyHours);xTotH+=hrs;xTotOT+=ot;xTotLv+=lv;xTotCost+=empCostAcc;
+    xEmpSum.push({name:emp.employee,hours:hrs,overtime:ot,leave:lv,weekStart:emp.weekStart||'',cost:empCostAcc});
   });
   xEmpSum.sort(function(a,b){return b.hours-a.hours});
-  var xJobArr=Object.keys(xJobSum).map(function(k){return{name:k,hours:xJobSum[k].hours,emps:Object.keys(xJobSum[k].emps).length,tasks:xJobSum[k].tasks}}).sort(function(a,b){return b.hours-a.hours});
+  var xJobArr=Object.keys(xJobSum).map(function(k){return{name:k,hours:xJobSum[k].hours,emps:Object.keys(xJobSum[k].emps).length,tasks:xJobSum[k].tasks,cost:xJobSum[k].cost}}).sort(function(a,b){return b.hours-a.hours});
+  var hasCostX=xTotCost>0;
   var weeks=window._anaWeeksList||[];
   var wkLabel=weeks.length===1?weeks[0]:(weeks[0]+' to '+weeks[weeks.length-1]);
 
@@ -3555,22 +3920,22 @@ function anaExportXlsx(){
     ['Employees','Total Hours','Avg Hrs/Employee','Overtime','Leave Days','Active Jobs'],
     [xEmpSum.length,xTotH,xEmpSum.length?Math.round(xTotH/xEmpSum.length*10)/10:0,xTotOT,xTotLv,xJobArr.length]
   ];
-  if(rate){sumRows.push([]);sumRows.push(['Base Rate','Est. Labor Cost']);sumRows.push([rate,xTotH*rate])}
+  if(hasCostX){sumRows.push([]);sumRows.push(['Base Rate','Total Labor Cost']);sumRows.push([rate,xTotCost])}
   sumRows.push([]);sumRows.push(['HOURS BY EMPLOYEE']);
   var empTblStart=sumRows.length;
-  sumRows.push(['Employee','Regular Hours','Overtime','Total Hours','Leave Days'].concat(rate?['Est. Cost']:[]));
-  xEmpSum.forEach(function(e){var reg=Math.min(e.hours,SETTINGS.weeklyHours);sumRows.push([e.name,reg,e.overtime,e.hours,e.leave].concat(rate?[e.hours*rate]:[]))});
+  sumRows.push(['Employee','Regular Hours','Overtime','Total Hours','Leave Days'].concat(hasCostX?['Est. Cost']:[]));
+  xEmpSum.forEach(function(e){var reg=Math.min(e.hours,SETTINGS.weeklyHours);sumRows.push([e.name,reg,e.overtime,e.hours,e.leave].concat(hasCostX?[e.cost||0]:[]))});
   var empTotRow=sumRows.length;
-  sumRows.push(['TOTAL',Math.max(0,xTotH-xTotOT),xTotOT,xTotH,xTotLv].concat(rate?[xTotH*rate]:[]));
+  sumRows.push(['TOTAL',Math.max(0,xTotH-xTotOT),xTotOT,xTotH,xTotLv].concat(hasCostX?[xTotCost]:[]));
 
   var wsSum=XLSX.utils.aoa_to_sheet(sumRows);
   wsSum['A1'].s=titleS;
   _colW(wsSum,[22,16,16,14,14,14]);
-  _styleHdr(wsSum,empTblStart,rate?6:5,hdrS);
-  _styleRow(wsSum,empTotRow,rate?6:5,totS);
+  _styleHdr(wsSum,empTblStart,hasCostX?6:5,hdrS);
+  _styleRow(wsSum,empTotRow,hasCostX?6:5,totS);
   // Format number columns
-  for(var r=empTblStart+1;r<empTotRow;r++){for(var c=1;c<(rate?6:5);c++){var ref=XLSX.utils.encode_cell({r:r,c:c});if(wsSum[ref]&&typeof wsSum[ref].v==='number')wsSum[ref].s=c===(rate?5:99)?moneyS:numS}}
-  if(rate){var ref2=XLSX.utils.encode_cell({r:empTotRow,c:5});if(wsSum[ref2])wsSum[ref2].s=totMonS}
+  for(var r=empTblStart+1;r<empTotRow;r++){for(var c=1;c<(hasCostX?6:5);c++){var ref=XLSX.utils.encode_cell({r:r,c:c});if(wsSum[ref]&&typeof wsSum[ref].v==='number')wsSum[ref].s=c===(hasCostX?5:99)?moneyS:numS}}
+  if(hasCostX){var ref2=XLSX.utils.encode_cell({r:empTotRow,c:5});if(wsSum[ref2])wsSum[ref2].s=totMonS}
   XLSX.utils.book_append_sheet(wb,wsSum,'Summary');
 
   // === Sheet 2: By Employee (detailed, with week column) ===
@@ -3593,39 +3958,39 @@ function anaExportXlsx(){
   XLSX.utils.book_append_sheet(wb,wsEmp,'By Employee');
 
   // === Sheet 3: By Job ===
-  var jobCols=['Job','Total Hours','People','% of Total'].concat(rate?['Est. Cost']:[]);
+  var jobCols=['Job','Total Hours','People','% of Total'].concat(hasCostX?['Est. Cost']:[]);
   var jobRows=[jobCols];
-  xJobArr.forEach(function(j){var pct=xTotH>0?j.hours/xTotH:0;jobRows.push([j.name,j.hours,j.emps,pct].concat(rate?[j.hours*rate]:[]))});
-  jobRows.push(['TOTAL',xTotH,xEmpSum.length,1].concat(rate?[xTotH*rate]:[]));
+  xJobArr.forEach(function(j){var pct=xTotH>0?j.hours/xTotH:0;jobRows.push([j.name,j.hours,j.emps,pct].concat(hasCostX?[j.cost||0]:[]))});
+  jobRows.push(['TOTAL',xTotH,xEmpSum.length,1].concat(hasCostX?[xTotCost]:[]));
   var wsJob=XLSX.utils.aoa_to_sheet(jobRows);
   _styleHdr(wsJob,0,jobCols.length,hdrGrn);
   _addFilter(wsJob,0,jobCols.length);
-  _colW(wsJob,[22,14,10,12].concat(rate?[14]:[]));
+  _colW(wsJob,[22,14,10,12].concat(hasCostX?[14]:[]));
   for(var r2=1;r2<jobRows.length-1;r2++){
     var ref3=XLSX.utils.encode_cell({r:r2,c:1});if(wsJob[ref3])wsJob[ref3].s=numS;
     var ref4=XLSX.utils.encode_cell({r:r2,c:3});if(wsJob[ref4])wsJob[ref4].s=pctS;
-    if(rate){var ref5=XLSX.utils.encode_cell({r:r2,c:4});if(wsJob[ref5])wsJob[ref5].s=moneyS}
+    if(hasCostX){var ref5=XLSX.utils.encode_cell({r:r2,c:4});if(wsJob[ref5])wsJob[ref5].s=moneyS}
   }
   _styleRow(wsJob,jobRows.length-1,jobCols.length,totS);
   // Add task breakdown rows below each job
   XLSX.utils.book_append_sheet(wb,wsJob,'By Job');
 
   // === Sheet 4: By Task (flat table with filters) ===
-  var taskCols=['Job','Task','Hours','% of Total'].concat(rate?['Est. Cost']:[]);
+  var taskCols=['Job','Task','Hours','% of Total'].concat(hasCostX?['Est. Cost']:[]);
   var taskRows2=[taskCols];
   var xTaskArr=[];
   xJobArr.forEach(function(j){Object.keys(j.tasks).sort(function(a,b){return j.tasks[b]-j.tasks[a]}).forEach(function(t){xTaskArr.push({job:j.name,task:t,hours:j.tasks[t]})})});
   xTaskArr.sort(function(a,b){return b.hours-a.hours});
-  xTaskArr.forEach(function(t){var pct=xTotH>0?t.hours/xTotH:0;taskRows2.push([t.job,t.task,t.hours,pct].concat(rate?[t.hours*rate]:[]))});
-  taskRows2.push(['TOTAL','',xTotH,1].concat(rate?[xTotH*rate]:[]));
+  xTaskArr.forEach(function(t){var pct=xTotH>0?t.hours/xTotH:0;var tc=xTaskCost[t.job+' > '+t.task]||0;taskRows2.push([t.job,t.task,t.hours,pct].concat(hasCostX?[tc]:[]))});
+  taskRows2.push(['TOTAL','',xTotH,1].concat(hasCostX?[xTotCost]:[]));
   var wsTask=XLSX.utils.aoa_to_sheet(taskRows2);
   _styleHdr(wsTask,0,taskCols.length,hdrGrn);
   _addFilter(wsTask,0,taskCols.length);
-  _colW(wsTask,[22,24,12,12].concat(rate?[14]:[]));
+  _colW(wsTask,[22,24,12,12].concat(hasCostX?[14]:[]));
   for(var r3=1;r3<taskRows2.length-1;r3++){
     var ref6=XLSX.utils.encode_cell({r:r3,c:2});if(wsTask[ref6])wsTask[ref6].s=numS;
     var ref7=XLSX.utils.encode_cell({r:r3,c:3});if(wsTask[ref7])wsTask[ref7].s=pctS;
-    if(rate){var ref8=XLSX.utils.encode_cell({r:r3,c:4});if(wsTask[ref8])wsTask[ref8].s=moneyS}
+    if(hasCostX){var ref8=XLSX.utils.encode_cell({r:r3,c:4});if(wsTask[ref8])wsTask[ref8].s=moneyS}
   }
   _styleRow(wsTask,taskRows2.length-1,taskCols.length,totS);
   XLSX.utils.book_append_sheet(wb,wsTask,'By Task');
