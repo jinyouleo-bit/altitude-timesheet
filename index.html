@@ -3531,6 +3531,34 @@ function anaRefilter(){
   var builderFilter=(document.getElementById('anaBuilder')||{}).value||'';
   _anaApplyFilters(projFilter,empFilter,window._anaWeeksList||[],builderFilter);
 }
+/* Scan cloud for the most recent week where this employee submitted a
+   non-deleted timesheet, then switch the Analytics view to that week + reload.
+   Helps admin recover from "I filtered to Kye but the week is empty". */
+function _findEmpLastWeek(empName){
+  if(!empName)return;
+  var btn=document.querySelector('#ana_sum button');if(btn){btn.textContent='Searching…';btn.disabled=true}
+  fetch(SYNC_URL+'/weeks').then(function(r){return r.json()}).then(function(res){
+    var weeks=(res.weeks||[]).slice().sort();
+    if(!weeks.length){toast('No weeks in the cloud yet');if(btn){btn.disabled=false;btn.textContent='🔍 Find '+empName+'’s last submitted week'}return}
+    /* Walk newest → oldest, stop at first week where this employee has a non-deleted timesheet. */
+    var i=weeks.length-1;
+    function checkNext(){
+      if(i<0){toast(empName+' has no timesheets in any week');if(btn){btn.disabled=false;btn.textContent='🔍 Find '+empName+'’s last submitted week'}return}
+      var wk=weeks[i--];
+      fetch(SYNC_URL+'/timesheets?week='+wk).then(function(r){return r.json()}).then(function(j){
+        var ts=(j.timesheets||[]).filter(function(t){return !_isSystemRecord(t)});
+        var match=ts.find(function(t){var d=t.data||t;return (d.employee||'').toLowerCase().trim()===String(empName).toLowerCase().trim()&&d.status!=='deleted'});
+        if(match){
+          /* Found it — switch the week selector and reload. */
+          var sel=document.getElementById('anaWeek');
+          if(sel){sel.value=wk;sel.dispatchEvent(new Event('change'))}
+          toast('Found: '+empName+' submitted week '+wk);
+        }else{checkNext()}
+      }).catch(checkNext);
+    }
+    checkNext();
+  }).catch(function(){toast('Network error');if(btn){btn.disabled=false;btn.textContent='🔍 Find '+empName+'’s last submitted week'}});
+}
 function _anaApplyFilters(projFilter,empFilter,weeks,builderFilter){
   var filtered=_repData;
   if(empFilter)filtered=filtered.filter(function(d){return d.employee===empFilter});
@@ -3549,7 +3577,34 @@ function _anaApplyFilters(projFilter,empFilter,weeks,builderFilter){
       return;
     }
   }
-  if(!filtered.length){document.getElementById('ana_sum').innerHTML='<div style="text-align:center;color:#aaa;padding:20px">No data found for selected filters.</div>';document.getElementById('anaTabs').style.display='';return}
+  if(!filtered.length){
+    /* Empty-state diagnostics: explain WHY there's no data instead of the
+       generic message. Common causes:
+       1. The selected employee didn't submit a timesheet for this week
+       2. The week has no timesheets from anyone
+       3. The combined filters narrowed to nothing
+       Also offer a one-click "find Kye's most recent week" via Date Range mode. */
+    var _mode=(document.getElementById('anaMode')||{}).value||'week';
+    var _wkLabel=_mode==='week'?((document.getElementById('anaWeek')||{}).value||'(unknown)'):'(range)';
+    var _msg='';
+    if(empFilter){
+      var _totalCount=_repData.length;
+      if(_totalCount>0){
+        _msg='<strong>'+esc(empFilter)+'</strong> has no timesheet for week <strong>'+esc(_wkLabel)+'</strong>.';
+        _msg+='<br><br>The cloud has <strong>'+_totalCount+'</strong> other timesheet'+(_totalCount===1?'':'s')+' for this week but none from '+esc(empFilter)+'.';
+        _msg+='<br><br><button onclick="_findEmpLastWeek(\''+esc(empFilter).replace(/\x27/g,"\\\x27")+'\')" style="background:var(--pri);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:.85rem;cursor:pointer;margin-top:6px">\u{1F50D} Find '+esc(empFilter)+'’s last submitted week</button>';
+      }else{
+        _msg='No timesheets exist for week <strong>'+esc(_wkLabel)+'</strong> yet.<br>Employees may not have submitted yet, or pick a different week.';
+      }
+    }else if(projFilter||builderFilter){
+      var _scope=[];if(projFilter)_scope.push('project <strong>'+esc(projFilter)+'</strong>');if(builderFilter){var _bn=(clients.find(function(c){return c.id===builderFilter})||{}).name||builderFilter;_scope.push('builder <strong>'+esc(_bn)+'</strong>')}
+      _msg='No hours logged on '+_scope.join(' / ')+' for the selected time range.';
+    }else{
+      _msg='No timesheets exist for the selected time range yet.';
+    }
+    document.getElementById('ana_sum').innerHTML='<div style="text-align:center;color:#666;padding:24px;background:#fafbff;border:1.5px dashed #d0d7e8;border-radius:10px;line-height:1.6">'+_msg+'</div>';
+    document.getElementById('anaTabs').style.display='';return;
+  }
   document.getElementById('anaTabs').style.display='';
   buildAllAnaTabs();
   showAnaTab('sum',document.querySelector('#apane_analytics .rtab'));
