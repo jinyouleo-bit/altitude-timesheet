@@ -745,9 +745,9 @@ body.is-locked .aj,body.is-locked .at,body.is-locked .je .rj,body.is-locked .tsk
             <option value="week">Single Week</option>
             <option value="range">Date Range</option>
           </select>
-          <select id="anaWeek" style="flex:1;min-width:150px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem;font-weight:600"></select>
-          <input type="date" id="anaFrom" style="display:none;flex:1;min-width:120px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem">
-          <input type="date" id="anaTo" style="display:none;flex:1;min-width:120px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem">
+          <select id="anaWeek" onchange="anaLoad()" style="flex:1;min-width:150px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem;font-weight:600"></select>
+          <input type="date" id="anaFrom" onchange="anaLoad()" style="display:none;flex:1;min-width:120px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem">
+          <input type="date" id="anaTo" onchange="anaLoad()" style="display:none;flex:1;min-width:120px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem">
           <select id="anaBuilder" onchange="anaBuilderChange()" style="flex:1;min-width:130px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem"><option value="">All Builders</option></select>
           <select id="anaProj" onchange="anaRefilter()" style="flex:1;min-width:130px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem"><option value="">All Projects</option></select>
           <select id="anaEmp" onchange="anaRefilter()" style="flex:1;min-width:130px;padding:9px;border:1.5px solid var(--bdr);border-radius:8px;font-size:.85rem"><option value="">All Employees</option></select>
