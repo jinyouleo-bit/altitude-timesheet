@@ -3652,8 +3652,22 @@ function buildAllAnaTabs(){
     _rateSource=empResolvedRate[empFilter].source==='myob'?'myob':'custom';
   }
   var _rateFor=_makeRateResolver(empResolvedRate,rate);
-  var empSum=[],jobSum={},daySum={},taskSum={},totH=0,totOT=0,totLv=0;
-  var weekLabel=emps.length?(emps[0].weekStart||'')+' to '+(emps[0].weekEnd||''):'(no data)';
+  /* BUG FIX (v118): in range mode, `emps` is a LIST OF TIMESHEETS (one per
+     employee-per-week), not employees. The old code pushed one row into empSum
+     per timesheet, so a single employee with 5 weeks of submissions showed up
+     5 times in every "by employee" view and skewed the EMPLOYEES count + avg.
+     Now we aggregate into _empAggMap by name and build empSum from that. */
+  var empSum=[],_empAggMap={},jobSum={},daySum={},taskSum={},totH=0,totOT=0,totLv=0;
+  /* weekLabel reflects the analysis range, not the first timesheet's week. */
+  var _wkList=window._anaWeeksList||[];
+  var weekLabel;
+  if(_wkList.length){
+    var _lastWk=_wkList[_wkList.length-1];
+    var _lastEnd=new Date(_lastWk+'T12:00:00');_lastEnd.setDate(_lastEnd.getDate()+6);
+    weekLabel=_wkList[0]+' to '+dk(_lastEnd)+(_wkList.length>1?' ('+_wkList.length+' weeks)':'');
+  }else{
+    weekLabel=emps.length?(emps[0].weekStart||'')+' to '+(emps[0].weekEnd||''):'(no data)';
+  }
 
   emps.forEach(function(emp){
     var hrs=0,lv=0,filteredHrs=0;
@@ -3698,8 +3712,22 @@ function buildAllAnaTabs(){
        that employee's row even when it's 0 ("Kye has no hours on Farm this week"). */
     if(anyFilter&&effectiveHrs===0&&!empFilter)return;
     var ot=Math.max(0,effectiveHrs-SETTINGS.weeklyHours);totH+=effectiveHrs;totOT+=ot;totLv+=lv;
-    empSum.push({name:emp.employee,hours:effectiveHrs,overtime:ot,leave:lv,days:emp.days,_projFilter:projFilter,_builderFilter:builderFilter,_jobPasses:_jobPasses});
+    /* Aggregate by employee name across multiple weeks (range mode). For single
+       weeks each emp only contributes one record so the merge is a no-op. */
+    var _en=emp.employee;
+    if(_empAggMap[_en]){
+      _empAggMap[_en].hours+=effectiveHrs;
+      _empAggMap[_en].overtime+=ot;
+      _empAggMap[_en].leave+=lv;
+      Array.prototype.push.apply(_empAggMap[_en].days,emp.days||[]);
+    }else{
+      _empAggMap[_en]={name:_en,hours:effectiveHrs,overtime:ot,leave:lv,days:(emp.days||[]).slice(),_projFilter:projFilter,_builderFilter:builderFilter,_jobPasses:_jobPasses};
+      empSum.push(_empAggMap[_en]);
+    }
   });
+  /* Sort days within each emp by date so the by-employee detail card shows
+     them in chronological order across multiple weeks. */
+  empSum.forEach(function(e){if(e.days&&e.days.length>1)e.days.sort(function(a,b){return (a.date||'').localeCompare(b.date||'')})});
   empSum.sort(function(a,b){return b.hours-a.hours});
   var jobArr=Object.keys(jobSum).map(function(k){return{name:k,hours:jobSum[k].hours,count:Object.keys(jobSum[k].emps).length,tasks:jobSum[k].tasks,days:jobSum[k].days,emps:jobSum[k].emps}}).sort(function(a,b){return b.hours-a.hours});
   var taskArr=Object.keys(taskSum).map(function(k){return taskSum[k]}).sort(function(a,b){return b.hours-a.hours});
@@ -3744,19 +3772,29 @@ function buildAllAnaTabs(){
   /* Show Cost columns whenever ANY cost was computed (per-emp custom, MYOB, project, or defRate).
      This replaces the old "if rate" gating which only checked the single global rate. */
   var hasCost=totCost>0;
-  var avgH=emps.length?totH/emps.length:0;
+  /* BUG FIX (v118): use empSum.length (distinct employees after aggregation),
+     NOT emps.length (timesheet record count). For a range covering 5 weeks of
+     1 employee, emps.length=5 but empSum.length=1 — what "Employees" should be. */
+  var distinctEmpCount=empSum.length;
+  var avgH=distinctEmpCount?totH/distinctEmpCount:0;
   var regH=Math.max(0,totH-totOT);
 
   // === SUMMARY TAB (enhanced with charts) ===
   var h='<div class="metric-grid">';
-  h+='<div class="metric-card"><div class="mk-n">'+emps.length+'</div><div class="mk-l">Employees</div></div>';
+  h+='<div class="metric-card"><div class="mk-n">'+distinctEmpCount+'</div><div class="mk-l">Employees</div></div>';
   h+='<div class="metric-card"><div class="mk-n">'+totH.toFixed(1)+'</div><div class="mk-l">Total Hours</div></div>';
   h+='<div class="metric-card"><div class="mk-n">'+avgH.toFixed(1)+'</div><div class="mk-l">Avg / Employee</div></div>';
   h+='<div class="metric-card"><div class="mk-n" style="color:'+(totOT>0?'var(--red)':'var(--pri)')+'">'+totOT.toFixed(1)+'</div><div class="mk-l">Overtime</div></div>';
   h+='<div class="metric-card"><div class="mk-n">'+jobArr.length+'</div><div class="mk-l">Jobs</div></div>';
   h+='<div class="metric-card"><div class="mk-n">'+totLv+'</div><div class="mk-l">Leave Days</div></div>';
-  // MYOB-based total cost
-  var myobTotalCost=0;Object.keys(empCostMap).forEach(function(n){myobTotalCost+=empCostMap[n].total});
+  /* BUG FIX (v118): MYOB total cost respects empFilter. Previously summed
+     ALL employees' MYOB cost (regardless of the active filter), then divided
+     by totH (which IS filtered) — produced nonsense $/hr like "$20.95/hr" for
+     a $65/hr worker because the numerator was 5 emps' costs / 1 emp's hours. */
+  var myobTotalCost=0;Object.keys(empCostMap).forEach(function(n){
+    if(empFilter&&n!==empFilter)return;
+    myobTotalCost+=empCostMap[n].total;
+  });
   if(myobTotalCost>0){
     h+='<div class="metric-card"><div class="mk-n" style="color:var(--grn)">$'+myobTotalCost.toFixed(0)+'</div><div class="mk-l">True Labour Cost</div></div>';
     h+='<div class="metric-card"><div class="mk-n" style="color:var(--grn)">$'+(totH>0?(myobTotalCost/totH).toFixed(2):'0')+'</div><div class="mk-l">True $/hr</div></div>';
@@ -3807,7 +3845,11 @@ function buildAllAnaTabs(){
 
   // Employee table — Cost column uses each emp's resolved rate (MYOB > custom > project > defRate)
   h+='<table class="rtbl"><thead><tr><th>Employee</th><th>Reg</th><th>OT</th><th>Total</th>'+(hasCost?'<th>Cost</th>':'')+'</tr></thead><tbody>';
-  empSum.forEach(function(e){var reg=Math.min(e.hours,SETTINGS.weeklyHours);h+='<tr><td>'+esc(e.name)+'</td><td>'+reg.toFixed(1)+'h</td><td'+(e.overtime>0?' class="ot"':'')+'>'+(e.overtime>0?'+'+e.overtime.toFixed(1)+'h':'-')+'</td><td><strong>'+e.hours.toFixed(1)+'h</strong></td>'+(hasCost?'<td style="color:var(--grn)">$'+(empCost[e.name]||0).toFixed(0)+'</td>':'')+'</tr>'});
+  /* BUG FIX (v118): Reg = hours minus OT (aggregated across weeks). The old
+     Math.min(hours, weeklyHours) clamped to 40 max, which broke for range mode
+     (Cameron 200h / 5 weeks: Reg should be 200, not 40). e.overtime is already
+     summed per-week, so e.hours - e.overtime gives the correct aggregate Reg. */
+  empSum.forEach(function(e){var reg=Math.max(0,(e.hours||0)-(e.overtime||0));h+='<tr><td>'+esc(e.name)+'</td><td>'+reg.toFixed(1)+'h</td><td'+(e.overtime>0?' class="ot"':'')+'>'+(e.overtime>0?'+'+e.overtime.toFixed(1)+'h':'-')+'</td><td><strong>'+e.hours.toFixed(1)+'h</strong></td>'+(hasCost?'<td style="color:var(--grn)">$'+(empCost[e.name]||0).toFixed(0)+'</td>':'')+'</tr>'});
   h+='<tr class="trow"><td>TOTAL</td><td>'+regH.toFixed(1)+'h</td><td>'+totOT.toFixed(1)+'h</td><td>'+totH.toFixed(1)+'h</td>'+(hasCost?'<td style="color:var(--grn)">$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
 
   // Cost breakdown by job — each job's cost = sum over emps of (emp_hrs_on_job × _rateFor(emp,job))
@@ -3832,7 +3874,7 @@ function buildAllAnaTabs(){
       }
       h+='</tr>';
     });
-    h+='<tr class="trow"><td>TOTAL</td><td>'+totH.toFixed(1)+'h</td><td>'+emps.length+'</td><td style="color:var(--grn)">$'+totCost.toFixed(0)+'</td>'+(budgets?'<td></td>':'')+'</tr></tbody></table>';
+    h+='<tr class="trow"><td>TOTAL</td><td>'+totH.toFixed(1)+'h</td><td>'+distinctEmpCount+'</td><td style="color:var(--grn)">$'+totCost.toFixed(0)+'</td>'+(budgets?'<td></td>':'')+'</tr></tbody></table>';
     h+='</div>';
   }
 
@@ -3938,7 +3980,7 @@ function buildAllAnaTabs(){
     var _tc=taskCost[t.job+' > '+t.task]||0;
     h+='<tr><td style="color:var(--pri);font-weight:600">'+esc(t.job)+'</td><td>'+esc(t.task)+'</td><td><strong>'+t.hours.toFixed(1)+'h</strong></td><td>'+people+'</td><td>'+pct.toFixed(1)+'%</td>'+(hasCost?'<td style="color:var(--grn)">$'+_tc.toFixed(0)+'</td>':'')+'</tr>';
   });
-  h+='<tr class="trow"><td colspan="2">TOTAL</td><td>'+totH.toFixed(1)+'h</td><td>'+emps.length+'</td><td>100%</td>'+(hasCost?'<td>$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
+  h+='<tr class="trow"><td colspan="2">TOTAL</td><td>'+totH.toFixed(1)+'h</td><td>'+distinctEmpCount+'</td><td>100%</td>'+(hasCost?'<td>$'+totCost.toFixed(0)+'</td>':'')+'</tr></tbody></table>';
   // Per-task employee detail (expandable)
   taskArr.forEach(function(t,ti){
     var empArr=Object.keys(t.emps).map(function(k){return{name:k,hours:t.emps[k]}}).sort(function(a,b){return b.hours-a.hours});
@@ -4184,6 +4226,7 @@ function anaExportXlsx(){
   var data=window._anaFiltered||_repData;if(!data.length){toast('No data to export');return}
   var projFilter=window._anaProjFilter||'';
   var builderFilter=window._anaBuilderFilter||'';
+  var empFilter=window._anaEmpFilter||'';
   /* Name -> builderId lookup so the export gates each job by builder filter
      consistently with the in-page Analytics tabs. */
   var _xJobBuilderId={};jobDefs.forEach(function(jd){if(jd&&jd.name)_xJobBuilderId[jd.name]=jd.builderId||''});
@@ -4228,7 +4271,10 @@ function anaExportXlsx(){
   function _styleRow(ws,row,cols,style){for(var c=0;c<cols;c++){var ref=XLSX.utils.encode_cell({r:row,c:c});if(ws[ref])ws[ref].s=style;else{ws[ref]={v:'',t:'s',s:style}}}}
 
   // --- Recalculate summary stats (with per-emp/per-job/per-task cost using _rateForX) ---
-  var xEmpSum=[],xJobSum={},xTotH=0,xTotOT=0,xTotLv=0,xTotCost=0;
+  /* BUG FIX (v118): aggregate by employee name across multiple weeks (range mode).
+     Was pushing one row per timesheet record → Cameron with 5 weeks of data
+     showed as 5 separate rows in the XLSX, throwing off Avg/Employee. */
+  var xEmpSum=[],_xAggMap={},xJobSum={},xTotH=0,xTotOT=0,xTotLv=0,xTotCost=0;
   var xTaskCost={}; // 'job > task' -> cost
   data.forEach(function(emp){
     var hrs=0,lv=0,empCostAcc=0,empLeaveH=0;
@@ -4262,7 +4308,13 @@ function anaExportXlsx(){
     if(_anyXFilter&&hrs===0)return;
     if(empLeaveH>0)empCostAcc+=empLeaveH*_rateForX(emp.employee,'');
     var ot=Math.max(0,hrs-SETTINGS.weeklyHours);xTotH+=hrs;xTotOT+=ot;xTotLv+=lv;xTotCost+=empCostAcc;
-    xEmpSum.push({name:emp.employee,hours:hrs,overtime:ot,leave:lv,weekStart:emp.weekStart||'',cost:empCostAcc});
+    var _xn=emp.employee;
+    if(_xAggMap[_xn]){
+      _xAggMap[_xn].hours+=hrs;_xAggMap[_xn].overtime+=ot;_xAggMap[_xn].leave+=lv;_xAggMap[_xn].cost+=empCostAcc;
+    }else{
+      _xAggMap[_xn]={name:_xn,hours:hrs,overtime:ot,leave:lv,weekStart:emp.weekStart||'',cost:empCostAcc};
+      xEmpSum.push(_xAggMap[_xn]);
+    }
   });
   xEmpSum.sort(function(a,b){return b.hours-a.hours});
   var xJobArr=Object.keys(xJobSum).map(function(k){return{name:k,hours:xJobSum[k].hours,emps:Object.keys(xJobSum[k].emps).length,tasks:xJobSum[k].tasks,cost:xJobSum[k].cost}}).sort(function(a,b){return b.hours-a.hours});
@@ -4271,19 +4323,33 @@ function anaExportXlsx(){
   var wkLabel=weeks.length===1?weeks[0]:(weeks[0]+' to '+weeks[weeks.length-1]);
 
   // === Sheet 1: Summary ===
+  /* BUG FIX (v118): include Employee + Builder filter in the header so an
+     export with filters applied is unambiguous (was only listing Project Filter). */
+  var _bldName='';if(builderFilter){_bldName=(clients.find(function(c){return c.id===builderFilter})||{}).name||builderFilter}
   var sumRows=[
     ['Altitude Timesheet — Analytics Report'],[''],
-    ['Report Period',wkLabel],['Project Filter',projFilter||'All Projects'],['Generated',new Date().toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'})],
+    ['Report Period',wkLabel],
+    ['Builder Filter',_bldName||'All Builders'],
+    ['Project Filter',projFilter||'All Projects'],
+    ['Employee Filter',empFilter||'All Employees'],
+    ['Generated',new Date().toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'})],
     [''],
     ['OVERVIEW'],
     ['Employees','Total Hours','Avg Hrs/Employee','Overtime','Leave Days','Active Jobs'],
     [xEmpSum.length,xTotH,xEmpSum.length?Math.round(xTotH/xEmpSum.length*10)/10:0,xTotOT,xTotLv,xJobArr.length]
   ];
-  if(hasCostX){sumRows.push([]);sumRows.push(['Base Rate','Total Labor Cost']);sumRows.push([rate,xTotCost])}
+  /* BUG FIX (v118): "Base Rate" in export now reflects emp's resolved rate
+     when an emp filter is active (matches the on-screen card behaviour). */
+  var _baseRateX=rate;var _baseRateLabel='Base Rate';
+  if(empFilter&&empResolvedRateX[empFilter]&&empResolvedRateX[empFilter].rate>0){
+    _baseRateX=empResolvedRateX[empFilter].rate;
+    _baseRateLabel='Rate ('+empFilter+(empResolvedRateX[empFilter].source==='myob'?' MYOB':' custom')+')';
+  }else if(projFilter){_baseRateLabel='Rate ('+projFilter+' project)'}
+  if(hasCostX){sumRows.push([]);sumRows.push([_baseRateLabel,'Total Labor Cost']);sumRows.push([_baseRateX,xTotCost])}
   sumRows.push([]);sumRows.push(['HOURS BY EMPLOYEE']);
   var empTblStart=sumRows.length;
   sumRows.push(['Employee','Regular Hours','Overtime','Total Hours','Leave Days'].concat(hasCostX?['Est. Cost']:[]));
-  xEmpSum.forEach(function(e){var reg=Math.min(e.hours,SETTINGS.weeklyHours);sumRows.push([e.name,reg,e.overtime,e.hours,e.leave].concat(hasCostX?[e.cost||0]:[]))});
+  xEmpSum.forEach(function(e){var reg=Math.max(0,(e.hours||0)-(e.overtime||0));sumRows.push([e.name,reg,e.overtime,e.hours,e.leave].concat(hasCostX?[e.cost||0]:[]))});
   var empTotRow=sumRows.length;
   sumRows.push(['TOTAL',Math.max(0,xTotH-xTotOT),xTotOT,xTotH,xTotLv].concat(hasCostX?[xTotCost]:[]));
 
