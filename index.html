@@ -2695,7 +2695,7 @@ function _renderBuilderGroup(ul,c,jobIdxs){
   if(!isUngrouped){
     actions='<button title="Rename builder" onclick="event.stopPropagation();renameClient(\''+esc(c.id)+'\')">✎ Rename</button>'+
       '<button title="'+(isArchived?'Reactivate':'Archive')+' builder" onclick="event.stopPropagation();toggleClientStatus(\''+esc(c.id)+'\')">'+(isArchived?'✓ Active':'⏸ Archive')+'</button>'+
-      '<button title="Delete builder" onclick="event.stopPropagation();deleteClient(\''+esc(c.id)+'\')">✕</button>';
+      '<button title="'+(isArchived?'Reactivate builder':'Archive builder (data kept)')+'" onclick="event.stopPropagation();deleteClient(\''+esc(c.id)+'\')">'+(isArchived?'↺':'\u{1F4E6}')+'</button>';
   }
   grp.innerHTML='<div class="bld-grp-h" onclick="this.parentElement.classList.toggle(\'open\')">'+
     '<span class="bld-caret">▶</span>'+
@@ -2729,7 +2729,7 @@ function _renderJobCard(parent,ji){var job=jobDefs[ji];
     var hrRate=job.hourlyRate||(_tierMatch?_tierMatch.rate:55);
     /* Compact summary text shown next to the "Details" toggle when collapsed */
     var detailsSummary=(job.status==='archived'?'Archived \u00B7 ':'')+ptLabel+' \u00B7 $'+hrRate+'/hr'+(job.budget?' \u00B7 '+job.budget+'h/wk':'')+(job.deadline?' \u00B7 due '+job.deadline:'');
-    card.innerHTML='<div class="ajc-h" id="ajch_'+ji+'" onclick="togAdmin(this,'+ji+')"><span class="jcaret">\u25B6</span><span class="jn">'+esc(job.name)+'</span><button class="rename-btn" title="Rename project" onclick="event.stopPropagation();promptRenameJob('+ji+')">\u270E</button>'+statusBadge+ptBadge+'<span class="jcnt">'+(job.budget?job.budget+'h budget | ':'')+job.tasks.length+' tasks'+((job.officeTasks&&job.officeTasks.length)?' + '+job.officeTasks.length+' office':'')+' &bull; $'+hrRate+'/hr</span><button class="rj" onclick="event.stopPropagation();rmJobDef('+ji+')">&#10005;</button></div>'+
+    card.innerHTML='<div class="ajc-h" id="ajch_'+ji+'" onclick="togAdmin(this,'+ji+')"><span class="jcaret">\u25B6</span><span class="jn">'+esc(job.name)+'</span><button class="rename-btn" title="Rename project" onclick="event.stopPropagation();promptRenameJob('+ji+')">\u270E</button>'+statusBadge+ptBadge+'<span class="jcnt">'+(job.budget?job.budget+'h budget | ':'')+job.tasks.length+' tasks'+((job.officeTasks&&job.officeTasks.length)?' + '+job.officeTasks.length+' office':'')+' &bull; $'+hrRate+'/hr</span><button class="rj" title="'+(job.status==='archived'?'Reactivate project':'Archive project (data kept)')+'" onclick="event.stopPropagation();rmJobDef('+ji+')">'+(job.status==='archived'?'\u21BA':'\u{1F4E6}')+'</button></div>'+
       '<div class="ajc-b" id="ajcb_'+ji+'">'+
       /* DETAILS toggle — collapsed by default, opens to reveal status/type/rate/budget/dates/address */
       '<div class="ajc-details-tog" id="ajdt_'+ji+'" onclick="togDetails('+ji+')"><span class="arr">\u25B6</span><span>\u2699 PROJECT DETAILS</span><span class="lbl-summary">'+esc(detailsSummary)+'</span></div>'+
@@ -2803,19 +2803,25 @@ function toggleClientStatus(id){
   renderAdmin();_bldPushSilent();
 }
 function deleteClient(id){
+  /* v124: builder "delete" is now archive-only. Existing projects under the
+     builder STAY linked — they just get hidden from picker grouping because
+     the builder is archived. To truly purge a builder, you'd first have to
+     un-link every project from it then archive. We refuse silent destruction. */
   var c=findClient(id);if(!c)return;
-  var used=jobDefs.filter(function(j){return j.builderId===id});
-  if(used.length){
-    if(!confirm('Builder "'+c.name+'" has '+used.length+' project'+(used.length===1?'':'s')+' under it.\n\nDelete the builder and move those projects to "Ungrouped"?\n\n(The projects themselves and all timesheet history are kept.)'))return;
-    used.forEach(function(j){delete j.builderId});
-    svDefs();
+  if(c.status==='archived'){
+    if(!confirm('"'+c.name+'" builder is already archived.\n\nClick OK to REACTIVATE (its projects will group under it again), or Cancel to keep archived.'))return;
+    c.status='active';
   }else{
-    if(!confirm('Delete builder "'+c.name+'"?'))return;
+    var used=jobDefs.filter(function(j){return j.builderId===id});
+    var msg='Archive builder "'+c.name+'"?';
+    if(used.length){msg+='\n\nIt has '+used.length+' project'+(used.length===1?'':'s')+' under it — they stay linked and continue to show in Analytics, just under the archived builder.'}
+    msg+='\n\n(Data is never deleted — reactivate any time.)';
+    if(!confirm(msg))return;
+    c.status='archived';
   }
-  var idx=clients.indexOf(c);if(idx!==-1)clients.splice(idx,1);
   svClients();
-  try{audit('builder_delete',{name:c.name,reassigned:used.length})}catch(e){}
-  toast('Builder deleted: '+c.name+(used.length?' ('+used.length+' project'+(used.length===1?'':'s')+' moved to Ungrouped)':''));
+  try{audit(c.status==='archived'?'builder_archive_from_X':'builder_reactivate_from_X',{name:c.name})}catch(e){}
+  toast(c.status==='archived'?('📦 Builder archived: '+c.name):('✓ Builder reactivated: '+c.name));
   renderAdmin();_bldPushSilent();
 }
 function setJobBuilder(ji,value){
@@ -3007,7 +3013,29 @@ function addJobDef(){var inp=document.getElementById('aNewJob');var name=inp.val
   var rate=tier?tier.rate:(customRate||55);
   jobDefs.push({name:name,tasks:[],status:'active',projectType:pType,hourlyRate:rate});
   svDefs();inp.value='';renderAdmin();build();var lastIdx=jobDefs.length-1;setTimeout(function(){var b=document.getElementById('ajcb_'+lastIdx);if(b)b.classList.add('open');var ai=document.getElementById('ati_'+lastIdx);if(ai)ai.focus()},100);toast('Job added: '+name+' ('+pType.toUpperCase().replace('_',' ')+')')}
-function rmJobDef(ji){if(!confirm('Remove job "'+jobDefs[ji].name+'" and all its tasks?'))return;jobDefs.splice(ji,1);svDefs();renderAdmin();toast('Job removed')}
+/* v124: rmJobDef no longer deletes — it archives. Data is sacred: deleted
+   projects leave orphan job names in historical timesheets (which already
+   bit us — see v123 migration). Archive hides the project from employee
+   pickers but keeps the jobDef intact, so the project name in old
+   timesheets continues to resolve. To un-archive, expand the project card
+   and click the Active/Archived toggle in PROJECT DETAILS. */
+function rmJobDef(ji){
+  var j=jobDefs[ji];if(!j)return;
+  if(j.status==='archived'){
+    /* Already archived — confirm whether to reactivate or leave alone. */
+    if(!confirm('"'+j.name+'" is already archived.\n\nClick OK to REACTIVATE it (employees will see it again in their job picker), or Cancel to keep it archived.'))return;
+    j.status='active';
+    svDefs();_bldPushSilent();renderAdmin();
+    try{audit('job_reactivate_from_X',{name:j.name})}catch(e){}
+    toast('✓ "'+j.name+'" reactivated');
+    return;
+  }
+  if(!confirm('Archive "'+j.name+'"?\n\nIt will be hidden from employees but all historical timesheet data is kept.\n\n(Data is never deleted — you can always reactivate later from PROJECT DETAILS.)'))return;
+  j.status='archived';
+  svDefs();_bldPushSilent();renderAdmin();build();
+  try{audit('job_archive_from_X',{name:j.name})}catch(e){}
+  toast('📦 "'+j.name+'" archived');
+}
 function _adminRenderTaskList(ji){
   var tl=document.getElementById('atl_'+ji);if(!tl)return;
   tl.innerHTML='';
@@ -6032,7 +6060,11 @@ function renderEmployees(){
       +(emp.status==='archived'
         ?'<button class="eb-act" onclick="setEmpStatus(\''+esc(emp.id)+'\',\'active\')">\u2713 Reactivate</button>'
         :'<button class="eb-arc" onclick="setEmpStatus(\''+esc(emp.id)+'\',\'archived\')">\u23F8 Archive</button>')
-      +'<button class="eb-del" onclick="delEmp(\''+esc(emp.id)+'\')">\u2715 Delete</button>'
+      /* v124: removed the duplicate "\u2715 Delete" button \u2014 the Archive button next
+         to it already covers the lifecycle, and Delete was a footgun (it actually
+         removed the employee row, breaking links from historical timesheets back
+         to a real name). delEmp() function is kept for back-compat \u2014 it now
+         archives instead of deletes. */
       +'</div>'
       +'<div style="display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 8px;background:#f8f9fc;border-radius:6px;flex-wrap:wrap">'
       +'<label style="font-size:.7rem;font-weight:700;color:#888">CUSTOM RATE</label>'
@@ -6229,12 +6261,23 @@ function editEmpName(id){
   pushEmpsSilently();
 }
 function delEmp(id){
+  /* v124: employee deletion is now archive-only. Their account stays in the
+     employees list so historical timesheets (which reference employeeId)
+     continue to resolve to a name in admin views. To truly remove an employee,
+     a separate "Permanently delete + scrub history" workflow would be needed —
+     but that's a destructive operation we won't expose by accident. */
   var e=findEmp(id);if(!e)return;
-  if(!confirm('Permanently delete '+e.name+'? Their past timesheets stay in the cloud, but the account is removed. Use Archive instead if they may return.'))return;
-  employees=employees.filter(function(x){return x.id!==id});svEmps();renderEmployees();
-  audit('emp_delete',{name:e.name});
-  toast('Deleted');
-  pushEmpsSilently();
+  if(e.status==='archived'){
+    if(!confirm('"'+e.name+'" is already archived.\n\nClick OK to REACTIVATE (they can log in again), or Cancel to keep archived.'))return;
+    e.status='active';svEmps();renderEmployees();pushEmpsSilently();
+    try{audit('emp_reactivate_from_X',{name:e.name})}catch(err){}
+    toast('✓ '+e.name+' reactivated');
+    return;
+  }
+  if(!confirm('Archive '+e.name+'?\n\nThey can no longer log in, but all their past timesheets stay in the cloud.\n\n(Data is never deleted — you can always reactivate later.)'))return;
+  e.status='archived';svEmps();renderEmployees();pushEmpsSilently();
+  try{audit('emp_archive_from_X',{name:e.name})}catch(err){}
+  toast('📦 '+e.name+' archived');
 }
 
 /* === UNIFIED TIMESHEETS TAB (replaces old Dashboard + History) === */
