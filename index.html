@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -894,15 +894,63 @@ function saveSettings(){localStorage.setItem('ts_admin_settings',JSON.stringify(
 loadSettings();
 if(!SETTINGS.breakMin){SETTINGS.breakMin=DEFAULT_SETTINGS.breakMin;saveSettings()}
 
-/* === EMPLOYEE ACCOUNTS (PIN system) === */
+/* === EMPLOYEE ACCOUNTS (PIN system) ===
+   B5 (v114): PINs are SHA-256 hashed before storage. Existing plain PINs are
+   transparently upgraded on app load + after each cloud pull. Plain `pin` field
+   is also stripped from publish bodies so the cloud never sees a plain PIN. */
 var employees=[];
-var currentEmp=null;  // {id, name, pin, status}
-function ldEmps(){try{employees=JSON.parse(localStorage.getItem('ts_employees')||'[]');if(!Array.isArray(employees))employees=[]}catch(e){employees=[]}}
+var currentEmp=null;  // {id, name, pinHash, status, ...}
+function ldEmps(){try{employees=JSON.parse(localStorage.getItem('ts_employees')||'[]');if(!Array.isArray(employees))employees=[]}catch(e){employees=[]}_maybeUpgradeEmpPins()}
 function svEmps(){localStorage.setItem('ts_employees',JSON.stringify(employees))}
 function genEmpId(){return 'emp_'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4)}
 function genPin(){return String(Math.floor(1000+Math.random()*9000))}
 function findEmp(id){for(var i=0;i<employees.length;i++)if(employees[i].id===id)return employees[i];return null}
 function findEmpByName(nm){if(!nm)return null;var n=nm.toLowerCase().trim();for(var i=0;i<employees.length;i++)if((employees[i].name||'').toLowerCase().trim()===n)return employees[i];return null}
+/* SHA-256 PIN hash. Returns lowercase hex (64 chars). Empty input -> empty string.
+   crypto.subtle requires a secure context (HTTPS / localhost) — Cloudflare Pages
+   and local preview both satisfy. Async by necessity, so all callers (login,
+   add/reset/change PIN) became async. */
+function _hashPin(plain){
+  if(!plain)return Promise.resolve('');
+  try{
+    return crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(plain))).then(function(buf){
+      var arr=new Uint8Array(buf);var out='';
+      for(var i=0;i<arr.length;i++)out+=arr[i].toString(16).padStart(2,'0');
+      return out;
+    });
+  }catch(e){return Promise.resolve('')}
+}
+/* Strip the plain `pin` field from any object copies before they leave the device.
+   Used by publishSync/pushEmpsSilently to guarantee plain PINs don't reach the cloud. */
+function _stripPlainPins(emps){
+  return (emps||[]).map(function(e){
+    if(!e||typeof e!=='object')return e;
+    var clone=Object.assign({},e);
+    if('pin' in clone)delete clone.pin;
+    return clone;
+  });
+}
+/* Upgrade any plain `pin` field to `pinHash` in place. Fire-and-forget — runs
+   asynchronously. Triggered from ldEmps + cloudSync after pulling employees. */
+function _maybeUpgradeEmpPins(){
+  if(!Array.isArray(employees)||!employees.length)return;
+  (function(){
+    var i=0;function step(){
+      if(i>=employees.length){return}
+      var e=employees[i++];
+      if(e&&e.pin&&!e.pinHash){
+        _hashPin(String(e.pin)).then(function(h){
+          if(h){e.pinHash=h;delete e.pin;svEmps();
+            /* Push once at the end (after the burst), not per-employee */
+            if(!window._pinUpgradePushTimer){window._pinUpgradePushTimer=setTimeout(function(){window._pinUpgradePushTimer=null;try{if(typeof pushEmpsSilently==='function')pushEmpsSilently()}catch(err){}},800)}
+          }
+          step();
+        }).catch(step);
+      }else{step()}
+    }
+    step();
+  })();
+}
 ldEmps();
 function setCurrentEmp(emp){
   currentEmp=emp;
@@ -947,18 +995,27 @@ function doLogin(){
   if(!pin){err.textContent='Please enter your PIN';err.classList.add('show');return}
   var e=findEmp(id);if(!e){err.textContent='Account not found — ask admin to re-add you';err.classList.add('show');return}
   if(e.status==='archived'){err.textContent='Your account is archived — contact admin';err.classList.add('show');return}
-  if(String(e.pin)!==pin){err.textContent='Wrong PIN — try again';err.classList.add('show');pinEl.value='';pinEl.focus();return}
-  setCurrentEmp(e);
-  _migrateLocalData();
-  hideLogin();
-  pinEl.value='';
-  // Pull this employee's data from cloud if local is empty
-  _pullMyTimesheetFromCloud(e,function(){
-    if(typeof build==='function')build();
-    if(typeof showSubBanner==='function')showSubBanner();
+  /* B5 fix: hash-first auth. Prefer pinHash; fall back to plain pin for legacy
+     records and migrate to pinHash on first successful login. */
+  _hashPin(pin).then(function(hashed){
+    var matched=false;
+    if(e.pinHash){matched=(e.pinHash===hashed)}
+    else if(e.pin){
+      matched=(String(e.pin)===pin);
+      if(matched){e.pinHash=hashed;delete e.pin;svEmps();try{if(typeof pushEmpsSilently==='function')pushEmpsSilently()}catch(err){}}
+    }
+    if(!matched){err.textContent='Wrong PIN — try again';err.classList.add('show');pinEl.value='';pinEl.focus();return}
+    setCurrentEmp(e);
+    _migrateLocalData();
+    hideLogin();
+    pinEl.value='';
+    _pullMyTimesheetFromCloud(e,function(){
+      if(typeof build==='function')build();
+      if(typeof showSubBanner==='function')showSubBanner();
+    });
+    audit('login',{emp:e.name});
+    toast('Welcome back, '+e.name);
   });
-  audit('login',{emp:e.name});
-  toast('Welcome back, '+e.name);
 }
 function signOut(){
   if(!confirm('Sign out?'))return;
@@ -984,19 +1041,25 @@ function doChangePin(){
   err.style.display='none';
   if(!currentEmp){err.textContent='Not signed in';err.style.display='';return}
   if(!oldPin){err.textContent='Enter your current PIN';err.style.display='';return}
-  if(String(currentEmp.pin)!==oldPin){err.textContent='Current PIN is incorrect';err.style.display='';return}
   if(!newPin||newPin.length<4){err.textContent='New PIN must be at least 4 digits';err.style.display='';return}
   if(newPin!==confirm2){err.textContent='New PINs do not match';err.style.display='';return}
-  // Update employee PIN locally
-  var emp=employees.find(function(e){return e.id===currentEmp.id});
-  if(emp)emp.pin=newPin;
-  currentEmp.pin=newPin;
-  svEmps();
-  // Sync to cloud
-  if(typeof cloudSync==='function')cloudSync(true);
-  document.getElementById('chgPinMo').classList.remove('open');
-  audit('pin_change',{emp:currentEmp.name});
-  toast('PIN updated successfully');
+  /* B5 fix: hash-based PIN change. Compare old PIN via hash (or legacy plain
+     fallback), then store the new PIN as a hash only. */
+  Promise.all([_hashPin(oldPin),_hashPin(newPin)]).then(function(hashes){
+    var oldHash=hashes[0],newHash=hashes[1];
+    var matched=false;
+    if(currentEmp.pinHash){matched=(currentEmp.pinHash===oldHash)}
+    else if(currentEmp.pin){matched=(String(currentEmp.pin)===oldPin)}
+    if(!matched){err.textContent='Current PIN is incorrect';err.style.display='';return}
+    var emp=employees.find(function(e){return e.id===currentEmp.id});
+    if(emp){emp.pinHash=newHash;delete emp.pin}
+    currentEmp.pinHash=newHash;delete currentEmp.pin;
+    svEmps();
+    if(typeof pushEmpsSilently==='function')pushEmpsSilently();
+    document.getElementById('chgPinMo').classList.remove('open');
+    audit('pin_change',{emp:currentEmp.name});
+    toast('PIN updated successfully');
+  });
 }
 /* GLOBAL ERROR HANDLER — surfaces uncaught errors as a sticky red banner so
    the user (and us) can see exactly what blew up rather than getting a blank screen. */
@@ -1210,6 +1273,18 @@ function _pullMyTimesheetFromCloud(emp,cb){
   }).catch(function(){if(cb)cb()});
 }
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+/* B6 helper: produce a single-quoted JS string literal that is also safe to embed
+   inside a double-quoted HTML attribute (e.g. onclick="someFunc("+_jsStr(name)+")").
+   Without this, names containing an apostrophe (e.g. "O'Brien") break the inline
+   onclick handler. Escapes both JS-level (\, ', \n, \r) and HTML-level (&, <, >, ")
+   so the attribute parser un-escapes cleanly into a valid JS literal. */
+function _jsStr(s){
+  return "'"+String(s==null?'':s)
+    .replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+    .replace(/\n/g,'\\n').replace(/\r/g,'\\r').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+    +"'";
+}
 
 /* =============================================================
    SYNC DIAGNOSTIC — side-by-side local vs cloud for this week.
@@ -1644,7 +1719,10 @@ function rmJE(btn,k){var je=btn.closest('.je'),jc=document.getElementById('jobs_
 function reIdx(k){var jc=document.getElementById('jobs_'+k);if(!jc)return;Array.from(jc.children).forEach(function(e,i){var h=e.querySelector('.je-hrs');if(h)h.id='jh_'+k+'_'+i})}
 function addTsk(sec,k,name,hrs){name=name!==undefined?name:'';hrs=hrs!==undefined?hrs:'';var list=sec.querySelector('.tsk-list');if(!list)return;var je=sec.closest('.je');var jn=je?je.querySelector('.je-hdr input[list],.je-hdr input[type=hidden],.je-hdr select').value:'';var dt=getTasks(jn);var div=document.createElement('div');div.className='tsk';
   var inp;
-  var safeJn=esc(jn).replace(/'/g,"\\'");
+  /* B6 fix: was `esc(jn).replace(/'/g,"\\'")` which was a no-op — esc() already
+     converts apostrophes to &#39;, so the regex never matched. Names with apostrophes
+     (e.g. "Bowen's") would break the inline onclick. Below we use _jsStr(jn) which
+     does both JS-level and HTML-level escaping. */
   if(!jn){
     // No job selected yet — disabled placeholder
     inp='<button type="button" class="mob-pick-btn empty" onclick="toast(\'Select a job first\')" style="cursor:not-allowed;color:#bbb">-- Pick a job first --</button><input type="hidden" value="">';
@@ -1657,7 +1735,7 @@ function addTsk(sec,k,name,hrs){name=name!==undefined?name:'';hrs=hrs!==undefine
     var label=name?((isOff?'\u{1F3E2}  ':'')+name):'-- Select task --';
     var cls=name?'':'empty';
     var extraStyle=isOff?' style="color:#7b1fa2;background:#f8f3fb;border-color:#e1bee7"':'';
-    inp='<button type="button" class="mob-pick-btn '+cls+'"'+extraStyle+' onclick="_pickTsk(this,\''+k+'\',\''+safeJn+'\')">'+esc(label)+'</button><input type="hidden" value="'+esc(String(name))+'">';
+    inp='<button type="button" class="mob-pick-btn '+cls+'"'+extraStyle+' onclick="_pickTsk(this,\''+k+'\','+_jsStr(jn)+')">'+esc(label)+'</button><input type="hidden" value="'+esc(String(name))+'">';
   }
   var hrsDisabled=!jn||dt.length===0||!name;
   div.innerHTML=inp+'<input type="number" placeholder="hrs" value="'+esc(String(hrs))+'" min="0" step="0.25" '+(hrsDisabled?'disabled style="background:#f5f5f5;color:#bbb" ':'')+'oninput="save();updJH(\''+k+'\');_updDayMismatch(\''+k+'\');_updLocks()"><button class="rt no-print" onclick="this.parentElement.remove();updJH(\''+k+'\');_updDayMismatch(\''+k+'\');_updLocks();save()">&#10005;</button>';
@@ -1851,7 +1929,7 @@ function _updDayMismatch(k){
 function updJH(k){var jc=document.getElementById('jobs_'+k);if(!jc)return;Array.from(jc.children).forEach(function(e,i){var t=0;e.querySelectorAll('.tsk input[type=number]').forEach(function(inp){t+=parseFloat(inp.value)||0});var el=document.getElementById('jh_'+k+'_'+i);if(!el){el=e.querySelector('.je-hrs');if(el)el.id='jh_'+k+'_'+i}if(el)el.textContent=t>0?t.toFixed(1)+'h':'0h'})}
 
 /* SAVE */
-function save(){if(window._weekIsLocked){return}var data={};for(var i=0;i<7;i++){var d=new Date(ws);d.setDate(d.getDate()+i);var k=dk(d);var leave=(document.getElementById('lv_'+k)||{}).value||'';var notes=(document.getElementById('nt_'+k)||{}).value||'';var jobs=[];var jc=document.getElementById('jobs_'+k);if(jc)Array.from(jc.children).forEach(function(e){var sel=e.querySelector('.je-hdr input[list],.je-hdr input[type=hidden],.je-hdr select');var jn=sel?sel.value:'';var tasks=[];e.querySelectorAll('.tsk').forEach(function(r){var hid=r.querySelector('input[type=hidden]');var txt=r.querySelector('input[type=text]');var num=r.querySelector('input[type=number]');var nm=hid?hid.value:(txt?txt.value:'');var hr=num?num.value:'';tasks.push({name:nm,hours:hr})});jobs.push({name:jn,tasks:tasks})});var plvVal=(document.getElementById('plvType_'+k)||{}).value||'';data[k]={start:(document.getElementById('s_'+k)||{}).value||'',finish:(document.getElementById('f_'+k)||{}).value||'',brk:parseInt((document.getElementById('bk_'+k)||{}).value)||0,leave:leave,partialLeave:plvVal,notes:notes,jobs:jobs}}localStorage.setItem(sk(),JSON.stringify(data));localStorage.setItem('ts_empName',document.getElementById('empName').value);window._isDirty=true;window._dirtyWeek=dk(ws);cloudSaveDebounced();if(typeof _updLocks==='function')_updLocks()}
+function save(){/* M5 hardening: re-check the meta status from localStorage so bypassing window._weekIsLocked via DevTools still doesn't let a locked week's data get overwritten. Admins bypass the lock by design (Edit toggle). cloudSaveTimesheet ALSO double-checks meta before pushing, so the server-side data stays safe even if a local write somehow slipped through. */if(!IS_ADMIN){try{var _lkMeta=getWeekMeta(dk(ws));if(_lkMeta&&(_lkMeta.status==='submitted'||_lkMeta.status==='approved')){window._weekIsLocked=true;return}}catch(e){}}if(window._weekIsLocked){return}var data={};for(var i=0;i<7;i++){var d=new Date(ws);d.setDate(d.getDate()+i);var k=dk(d);var leave=(document.getElementById('lv_'+k)||{}).value||'';var notes=(document.getElementById('nt_'+k)||{}).value||'';var jobs=[];var jc=document.getElementById('jobs_'+k);if(jc)Array.from(jc.children).forEach(function(e){var sel=e.querySelector('.je-hdr input[list],.je-hdr input[type=hidden],.je-hdr select');var jn=sel?sel.value:'';var tasks=[];e.querySelectorAll('.tsk').forEach(function(r){var hid=r.querySelector('input[type=hidden]');var txt=r.querySelector('input[type=text]');var num=r.querySelector('input[type=number]');var nm=hid?hid.value:(txt?txt.value:'');var hr=num?num.value:'';tasks.push({name:nm,hours:hr})});jobs.push({name:jn,tasks:tasks})});var plvVal=(document.getElementById('plvType_'+k)||{}).value||'';data[k]={start:(document.getElementById('s_'+k)||{}).value||'',finish:(document.getElementById('f_'+k)||{}).value||'',brk:parseInt((document.getElementById('bk_'+k)||{}).value)||0,leave:leave,partialLeave:plvVal,notes:notes,jobs:jobs}}localStorage.setItem(sk(),JSON.stringify(data));localStorage.setItem('ts_empName',document.getElementById('empName').value);window._isDirty=true;window._dirtyWeek=dk(ws);cloudSaveDebounced();if(typeof _updLocks==='function')_updLocks()}
 var _cloudSaveTimer=null;
 /* Capture the weekStart at debounce-arm time so the POST uses the correct week
    even if the user navigates to a different week before the timer fires. */
@@ -3031,8 +3109,10 @@ function publishSync(){
     headers:{'Content-Type':'application/json'},
     /* Include clients (builder/client list) so other devices see the same builder
        groupings. If the edge function ignores unknown fields it's harmless —
-       clients still work locally and we fall back to per-jobDef.builderId. */
-    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:employees,clients:clients})
+       clients still work locally and we fall back to per-jobDef.builderId.
+       B5 fix: _stripPlainPins removes any lingering plain `pin` field before
+       posting, so the cloud never receives a plain-text PIN. */
+    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:_stripPlainPins(employees),clients:clients})
   }).then(function(r){return r.json()}).then(function(res){
     if(res.error)throw new Error(res.error);
     var ver={ts:res.version,jobs:res.jobs,tasks:res.tasks};
@@ -3067,7 +3147,8 @@ function pushEmpsSilently(){
   fetch(SYNC_URL,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:employees,clients:clients})
+    /* B5 fix: strip plain `pin` field — cloud only ever sees pinHash. */
+    body:JSON.stringify({jobDefs:jobDefs,rate:defRate,employees:_stripPlainPins(employees),clients:clients})
   }).then(function(r){return r.json()}).then(function(res){
     if(res.error)throw new Error(res.error);
     setSyncVer({ts:res.version,jobs:res.jobs,tasks:res.tasks});
@@ -3100,7 +3181,7 @@ function cloudSync(silent){
       /* Skip employee replacement if an admin is mid-editing the Employees tab —
          otherwise their in-progress add/edit gets clobbered. */
       var adminEditingEmps=(typeof IS_ADMIN!=='undefined'&&IS_ADMIN)&&document.querySelector('#aCont [data-tab="emps"]')&&document.querySelector('#aCont [data-tab="emps"]').classList.contains('active')&&document.getElementById('adminMo')&&document.getElementById('adminMo').classList.contains('open');
-      if(res.employees&&Array.isArray(res.employees)&&!adminEditingEmps){employees=res.employees;svEmps();}
+      if(res.employees&&Array.isArray(res.employees)&&!adminEditingEmps){employees=res.employees;svEmps();/* B5 fix: a pulled bundle may still contain legacy plain `pin` from older devices — upgrade them to hashes immediately so they never go back to cloud. */if(typeof _maybeUpgradeEmpPins==='function')_maybeUpgradeEmpPins();}
       /* Pull clients (builder/client list) if the edge function echoes it.
          If absent, run migration so any new jobs still get auto-grouped from
          their name's first word — keeps things working even if the cloud
@@ -4411,13 +4492,15 @@ function _renderTaskBudgets(def){
   var unalloc=tb>0?(tb-totalAlloc):0;
   var unalloccolor=unalloc>0?'var(--org)':(unalloc<0?'var(--red)':'var(--grn)');
   var jobName=def.name;
-  var safeJobJs=jobName.replace(/'/g,"\\'");
+  /* B6 fix: _jsStr safely embeds the job name in an inline handler, even when it
+     contains apostrophes / quotes / control chars. Replaces the ad-hoc single-
+     quote-only escape that broke for names like "O'Brien Office". */
   var h='<div class="tbg-block">';
   h+='<div class="tbg-header">';
   h+='<div class="tbg-title">◆ TASK BUDGETS</div>';
   h+='<div class="tbg-actions">';
-  if(tb>0)h+='<button onclick="autoDistributeTaskBudgets(\''+safeJobJs+'\')" class="tbg-btn tbg-btn-pri">Auto-split remaining</button>';
-  h+='<button onclick="resetTaskBudgets(\''+safeJobJs+'\')" class="tbg-btn tbg-btn-sec">Reset</button>';
+  if(tb>0)h+='<button onclick="autoDistributeTaskBudgets('+_jsStr(jobName)+')" class="tbg-btn tbg-btn-pri">Auto-split remaining</button>';
+  h+='<button onclick="resetTaskBudgets('+_jsStr(jobName)+')" class="tbg-btn tbg-btn-sec">Reset</button>';
   h+='</div></div>';
   if(tb>0){
     h+='<div class="tbg-summary">Allocated: <strong>'+totalAlloc.toFixed(0)+'</strong> / '+tb+' h &nbsp;|&nbsp; Unallocated: <strong style="color:'+unalloccolor+'">'+unalloc.toFixed(0)+'h</strong>';
@@ -4431,10 +4514,9 @@ function _renderTaskBudgets(def){
     var used=parseFloat(taskUsage[t.name])||0;
     var pct=b>0?(used/b)*100:0;
     var cls=pct<=80?'ok':(pct<=100?'warn':'over');
-    var safeTask=t.name.replace(/'/g,"\\'");
     h+='<div class="tbg-row">';
     h+='<span class="tbg-name'+(t.isOffice?' tbg-name-office':'')+'" title="'+(t.isOffice?'Office-only task':'')+'">'+(t.isOffice?'🏢 ':'')+esc(t.name)+'</span>';
-    h+='<input type="number" min="0" step="10" value="'+(b||'')+'" placeholder="—" onchange="setTaskBudget(\''+safeJobJs+'\',\''+safeTask+'\',this.value)" class="tbg-input" title="Budgeted hours for this task">';
+    h+='<input type="number" min="0" step="10" value="'+(b||'')+'" placeholder="—" onchange="setTaskBudget('+_jsStr(jobName)+','+_jsStr(t.name)+',this.value)" class="tbg-input" title="Budgeted hours for this task">';
     h+='<span class="tbg-used">'+(used>0?used.toFixed(0)+'h used':'<span style="color:#ccc">no usage</span>')+(b>0&&used>0?' · '+pct.toFixed(0)+'%':'')+'</span>';
     if(b>0){h+='<div class="bbar tbg-bar"><div class="bbar-fill '+cls+'" style="width:'+Math.min(pct,100)+'%"></div></div>'}
     else h+='<div class="tbg-bar-placeholder"></div>';
@@ -5695,7 +5777,11 @@ function renderEmployees(){
       +'</div>';
     card.innerHTML='<div class="emp-row">'
       +'<div class="en">'+esc(emp.name||'(no name)')+' '+statusBadge+roleBadge+'</div>'
-      +'<div class="ep">'+esc(emp.pin||'----')+'</div>'
+      /* B5 fix: never display the stored PIN value — show only a status pill.
+         If pinHash is set (post-migration) we show "(PIN set)". If only the
+         legacy plain pin is present we show it once, since the next login will
+         hash and clear it. If neither, the account has no PIN. */
+      +'<div class="ep" title="PIN is hashed locally and never shown again — use Reset to set a new one">'+(emp.pinHash?'•••• set':(emp.pin?esc(emp.pin)+' ⚠ (legacy, will hash on next login)':'(no PIN)'))+'</div>'
       +'<button class="eb-rst" onclick="resetPin(\''+esc(emp.id)+'\')" title="Set/reset PIN">\u{1F504} PIN</button>'
       +'<button class="eb-edit" onclick="editEmpName(\''+esc(emp.id)+'\')">\u270E Rename</button>'
       +roleSeg
@@ -5802,12 +5888,16 @@ function addEmployee(){
   if(findEmpByName(name)){alert('Already have an employee called "'+name+'"');return}
   if(pin&&!/^\d{4}$/.test(pin)){alert('PIN must be exactly 4 digits');return}
   if(!pin)pin=genPin();
-  var emp={id:genEmpId(),name:name,pin:pin,status:'active',email:'',createdAt:Date.now()};
-  employees.push(emp);svEmps();renderEmployees();
-  ni.value='';pi.value='';ni.focus();
-  audit('emp_add',{name:name});
-  toast('Added '+name+' (PIN: '+pin+') — syncing to phones...');
-  pushEmpsSilently();
+  /* B5 fix: store pinHash, not the plain PIN. Plain PIN is shown ONCE in the
+     toast so admin can tell the employee — never persisted or sent to cloud. */
+  _hashPin(pin).then(function(hash){
+    var emp={id:genEmpId(),name:name,pinHash:hash,status:'active',email:'',createdAt:Date.now()};
+    employees.push(emp);svEmps();renderEmployees();
+    ni.value='';pi.value='';ni.focus();
+    audit('emp_add',{name:name});
+    toast('Added '+name+' — PIN: '+pin+' (write this down, won’t be shown again)');
+    pushEmpsSilently();
+  });
 }
 function setEmpStatus(id,st){
   var e=findEmp(id);if(!e)return;
@@ -5823,10 +5913,13 @@ function resetPin(id){
   newPin=newPin.trim();
   if(newPin&&!/^\d{4}$/.test(newPin)){alert('PIN must be exactly 4 digits');return}
   if(!newPin)newPin=genPin();
-  e.pin=newPin;svEmps();renderEmployees();
-  audit('emp_pin_reset',{name:e.name});
-  toast('New PIN for '+e.name+': '+e.pin);
-  pushEmpsSilently();
+  /* B5 fix: store hashed PIN only; plain new PIN shown once in the toast. */
+  _hashPin(newPin).then(function(hash){
+    e.pinHash=hash;delete e.pin;svEmps();renderEmployees();
+    audit('emp_pin_reset',{name:e.name});
+    toast('New PIN for '+e.name+': '+newPin+' (write this down, won’t be shown again)');
+    pushEmpsSilently();
+  });
 }
 function toggleRole(id){
   var e=findEmp(id);if(!e)return;
@@ -6073,8 +6166,10 @@ function _tsRenderRow(item,idx,single){
   h+='<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">';
   // Quick inline actions for submitted/approved (single-week view)
   if(single){
-    if(st==='submitted'){h+='<button onclick="event.stopPropagation();dashApprove(\''+esc(item.employeeId||'')+'\',\''+esc(item.employee||'')+'\',\''+item.weekStart+'\')" style="padding:4px 8px;border:none;border-radius:5px;font-weight:700;font-size:.68rem;background:#1976d2;color:#fff;cursor:pointer">Approve</button>'}
-    if(st==='submitted'||st==='approved'){h+='<button onclick="event.stopPropagation();dashReopen(\''+esc(item.employeeId||'')+'\',\''+esc(item.employee||'')+'\',\''+item.weekStart+'\')" style="padding:4px 8px;border:none;border-radius:5px;font-weight:700;font-size:.68rem;background:#fff8e1;color:var(--org);cursor:pointer">Reopen</button>'}
+    /* B6 fix: use _jsStr for employee name — an apostrophe in the name (e.g. "O'Brien")
+       used to break out of the onclick string literal. _jsStr handles both JS and HTML escaping. */
+    if(st==='submitted'){h+='<button onclick="event.stopPropagation();dashApprove('+_jsStr(item.employeeId||'')+','+_jsStr(item.employee||'')+','+_jsStr(item.weekStart)+')" style="padding:4px 8px;border:none;border-radius:5px;font-weight:700;font-size:.68rem;background:#1976d2;color:#fff;cursor:pointer">Approve</button>'}
+    if(st==='submitted'||st==='approved'){h+='<button onclick="event.stopPropagation();dashReopen('+_jsStr(item.employeeId||'')+','+_jsStr(item.employee||'')+','+_jsStr(item.weekStart)+')" style="padding:4px 8px;border:none;border-radius:5px;font-weight:700;font-size:.68rem;background:#fff8e1;color:var(--org);cursor:pointer">Reopen</button>'}
   }
   h+='<div class="hb" style="font-size:.78rem;color:'+(item.totalHours>0?'var(--grn)':'#aaa')+';font-weight:700;background:'+(item.totalHours>0?'var(--grn-lt)':'#f0f0f0')+';border-radius:10px;padding:3px 9px">'+hrs+'h</div>';
   h+='</div></div>';
