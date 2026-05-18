@@ -1676,12 +1676,12 @@ function _openMobPicker(opts,current,title,onPick){
   setTimeout(function(){si.focus()},100);
 }
 function _mkJobInput(jn,k){
-  if(_isMobile()){
-    var label=jn||'-- Select Job --';
-    var cls=jn?'':'empty';
-    return '<button type="button" class="mob-pick-btn '+cls+'" onclick="_pickJob(this,\''+k+'\')">'+esc(label)+'</button><input type="hidden" value="'+esc(jn)+'">'
-  }
-  return '<input type="text" list="dl_jobs" value="'+esc(jn)+'" placeholder="Search jobs..." onchange="onJobSel(this,\''+k+'\');save()" oninput="save()">'
+  /* Always use the popup picker so the builder/client grouping (added in v110)
+     is visible on desktop too — was previously only used on mobile, while
+     desktop fell back to HTML5 <datalist> which doesn't support optgroup. */
+  var label=jn||'-- Select Job --';
+  var cls=jn?'':'empty';
+  return '<button type="button" class="mob-pick-btn '+cls+'" onclick="_pickJob(this,\''+k+'\')">'+esc(label)+'</button><input type="hidden" value="'+esc(jn)+'">'
 }
 /* ---------- Job info popup (address, site contact, notes) shown when employee taps 📍 ---------- */
 function _openJobInfo(jobName){
