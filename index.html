@@ -1465,7 +1465,7 @@ function tog(k){
     requestAnimationFrame(function(){requestAnimationFrame(scrollToOpen)});
   }
 }
-function onLv(k){if(window._weekIsLocked)return;var lv=document.getElementById('lv_'+k).value;document.getElementById('w_'+k).style.display=lv?'none':'';if(lv){document.getElementById('h_'+k).textContent=lv==='Unpaid Leave'?'0.0':SETTINGS.dailyHours.toFixed(1);var plvEl=document.getElementById('plv_'+k);if(plvEl)plvEl.style.display='none'}else calc(k);save();updTot();_updDayMismatch(k);_updLocks();build()}
+function onLv(k){if(window._weekIsLocked)return;var lv=document.getElementById('lv_'+k).value;document.getElementById('w_'+k).style.display=lv?'none':'';if(lv){document.getElementById('h_'+k).textContent=lv==='Unpaid Leave'?'0.0':SETTINGS.dailyHours.toFixed(1);var plvEl=document.getElementById('plv_'+k);if(plvEl)plvEl.style.display='none';/* B2 fix: clear any stale partial-leave selection when switching to a full-day leave — otherwise a later switch back to a working day re-applies the stale top-up */var _pType=document.getElementById('plvType_'+k);if(_pType&&_pType.value)_pType.value=''}else calc(k);save();updTot();_updDayMismatch(k);_updLocks();build()}
 function onPlv(k){calc(k);save();updTot();_updDayMismatch(k);_updLocks()}
 function calc(k){var lv=(document.getElementById('lv_'+k)||{}).value;if(lv){document.getElementById('h_'+k).textContent=lv==='Unpaid Leave'?'0.0':SETTINGS.dailyHours.toFixed(1);var plvEl=document.getElementById('plv_'+k);if(plvEl)plvEl.style.display='none';updTot();_updDayMismatch(k);return}var s=(document.getElementById('s_'+k)||{}).value,f=(document.getElementById('f_'+k)||{}).value,bk=parseInt((document.getElementById('bk_'+k)||{}).value)||0,workHrs=0;if(s&&f){var sp=s.split(':'),fp=f.split(':');workHrs=Math.max(0,((parseInt(fp[0])*60+parseInt(fp[1]))-(parseInt(sp[0])*60+parseInt(sp[1])))/60)}
 var daily=SETTINGS.dailyHours||8;var plvRow=document.getElementById('plv_'+k);var plvType=(document.getElementById('plvType_'+k)||{}).value||'';var plvHrsEl=document.getElementById('plvHrs_'+k);var topUp=0;
@@ -2506,7 +2506,7 @@ function chkPin(){
     else alert('Incorrect PIN ('+(5-fails>0?(5-fails)+' attempts before lockout)':'next wrong attempt triggers lockout)'));
   }
 }
-function chgPin(){var np=document.getElementById('aNewPin').value.trim();if(!np||np.length<4){alert('PIN must be 4+ chars');return}localStorage.setItem('ts_pin',np);document.getElementById('aNewPin').value='';toast('PIN updated')}
+function chgPin(){var np=document.getElementById('aNewPin').value.trim();if(!np||np.length<4){alert('PIN must be 4+ chars');return}var oldPin=localStorage.getItem('ts_pin')||'';localStorage.setItem('ts_pin',np);document.getElementById('aNewPin').value='';/* M6 fix: audit admin PIN change so a compromised PIN leaves a trail (PIN value itself NOT logged — only last 2 digits as a recovery hint). */try{audit('admin_pin_change',{from_suffix:oldPin?'***'+oldPin.slice(-2):'(unset)',to_suffix:'***'+np.slice(-2)})}catch(e){}toast('PIN updated')}
 function svRate(){var r=parseFloat(document.getElementById('aRate').value)||0;defRate=r;localStorage.setItem('ts_rate',String(r));document.getElementById('rateShow').textContent=r>0?'$'+r.toFixed(2)+'/hr':'';toast('Rate saved')}
 
 function renderAdmin(){
@@ -2891,9 +2891,23 @@ function addOfficeTaskDef(ji,inp){var name=inp.value.trim();if(!name)return;var 
 function rmOfficeTaskDef(ji,ti){var j=jobDefs[ji];if(!j.officeTasks)return;var name=j.officeTasks[ti];if(!confirm('Remove office-only task "'+name+'"?'))return;j.officeTasks.splice(ti,1);svDefs();renderAdmin();rebuildDataLists();
   setTimeout(function(){var b=document.getElementById('ajcb_'+ji);if(b)b.classList.add('open')},50);
   toast('Office task removed')}
-function renameOfficeTaskDef(ji,ti){var j=jobDefs[ji];if(!j.officeTasks)return;var oldName=j.officeTasks[ti];var nv=prompt('Rename office task "'+oldName+'" to:',oldName);if(nv===null)return;nv=nv.trim();if(!nv){alert('Name cannot be empty');return}if(nv===oldName)return;var low=nv.toLowerCase();var dup=(j.tasks||[]).find(function(t){return t.toLowerCase()===low})||(j.officeTasks||[]).find(function(t,i){return i!==ti&&t.toLowerCase()===low});if(dup){alert('"'+dup+'" already exists in this job');return}j.officeTasks[ti]=nv;svDefs();renderAdmin();rebuildDataLists();
-  setTimeout(function(){var b=document.getElementById('ajcb_'+ji);if(b)b.classList.add('open')},50);
-  toast('Renamed to: '+nv)}
+function renameOfficeTaskDef(ji,ti){var j=jobDefs[ji];if(!j.officeTasks)return;var oldName=j.officeTasks[ti];var nv=prompt('Rename office task "'+oldName+'" to:',oldName);if(nv===null)return;nv=nv.trim();if(!nv){alert('Name cannot be empty');return}if(nv===oldName)return;var low=nv.toLowerCase();var dup=(j.tasks||[]).find(function(t){return t.toLowerCase()===low})||(j.officeTasks||[]).find(function(t,i){return i!==ti&&t.toLowerCase()===low});if(dup){alert('"'+dup+'" already exists in this job');return}
+  j.officeTasks[ti]=nv;
+  /* B3+B4 fix: migrate the task-budget entry and propagate the rename to cloud +
+     localStorage drafts, mirroring renameTaskDef. Without these calls, office-task
+     renames stay LOCAL ONLY — historical timesheets keep the old name forever and
+     v112 task budgets get orphaned. */
+  if(j.taskBudgets&&j.taskBudgets[oldName]!=null){j.taskBudgets[nv]=j.taskBudgets[oldName];delete j.taskBudgets[oldName]}
+  svDefs();renderAdmin();rebuildDataLists();
+  try{audit('office_task_rename',{job:j.name,from:oldName,to:nv})}catch(e){}
+  toast('Renaming "'+oldName+'" → "'+nv+'" everywhere...');
+  _renameTaskLocal(j.name,oldName,nv);
+  _propagateTaskRename(j.name,oldName,nv,function(n){
+    if(n<0)toast('⚠️ Cloud update failed — renamed locally only');
+    else if(n===0)toast('✓ Office task renamed (no historical entries)');
+    else toast('✓ Office task renamed — updated '+n+' timesheet(s) in cloud');
+  });
+  setTimeout(function(){var b=document.getElementById('ajcb_'+ji);if(b)b.classList.add('open')},50);}
 function moveTaskToOffice(ji,ti){var j=jobDefs[ji];var name=j.tasks[ti];_ensureOfficeTasks(ji);var low=name.toLowerCase();var dup=j.officeTasks.find(function(t){return t.toLowerCase()===low});if(dup){alert('"'+dup+'" already in office list — cannot move duplicate');return}j.tasks.splice(ti,1);j.officeTasks.push(name);svDefs();renderAdmin();rebuildDataLists();
   setTimeout(function(){var b=document.getElementById('ajcb_'+ji);if(b)b.classList.add('open')},50);
   toast('"'+name+'" → Office only')}
@@ -2911,7 +2925,14 @@ function renameTaskDef(ji,ti){
   var j=jobDefs[ji];
   var dup=(j.tasks||[]).find(function(t,i){return i!==ti&&t.toLowerCase()===low})||(j.officeTasks||[]).find(function(t){return t.toLowerCase()===low});
   if(dup){alert('"'+dup+'" already exists in this job');return}
-  jobDefs[ji].tasks[ti]=nv;svDefs();
+  jobDefs[ji].tasks[ti]=nv;
+  /* B3 fix: migrate task-level budget so the v112 task-budget feature doesn't
+     silently lose data when a task is renamed. */
+  if(jobDefs[ji].taskBudgets&&jobDefs[ji].taskBudgets[oldName]!=null){
+    jobDefs[ji].taskBudgets[nv]=jobDefs[ji].taskBudgets[oldName];
+    delete jobDefs[ji].taskBudgets[oldName];
+  }
+  svDefs();
   _adminRenderTaskList(ji);
   rebuildDataLists();
   audit('task_rename',{job:jobName,from:oldName,to:nv});
@@ -3228,6 +3249,34 @@ function gatherAll(){var emp=document.getElementById('empName').value||'Employee
     data.days.push({date:k,day:DAYS[i],hours:g.hrs,leave:g.lv,partialLeave:g.partialLeave||'',jobs:jobs,notes:notes,start:g.s,finish:g.f,brk:g.bk})}return data}
 /* === UNIFIED ANALYTICS ENGINE === */
 var _repData=[],_anaWeeks=[],_anaMyobCache={};
+/* === Shared rate resolution ===
+   R3 fix: extract the MYOB-vs-custom-vs-project-vs-defRate logic that was
+   previously duplicated between buildAllAnaTabs and anaExportXlsx. A single
+   source of truth means changing the priority order (or adding EBA tier
+   lookup, etc.) only needs to happen once. */
+function _resolveEmpRateMap(myobCache){
+  var map={};
+  (employees||[]).forEach(function(emp){
+    var totalGross=0,totalHrs=0;
+    Object.keys(myobCache||{}).forEach(function(wk){var m=(myobCache[wk]||{})[emp.id];if(m){totalGross+=(m.gross||0);totalHrs+=(m.hours||0)}});
+    if(totalGross>0&&totalHrs>0){
+      var role=emp.role||'worker';var hrRate=emp.hourlyRate||defRate||55;
+      var c=calcWageCost(totalGross,hrRate,totalHrs||40,role,'non_eba');
+      map[emp.name]={rate:c.perHour,source:'myob'};return;
+    }
+    if(parseFloat(emp.hourlyRate)>0){map[emp.name]={rate:parseFloat(emp.hourlyRate),source:'custom'};return}
+    map[emp.name]={rate:0,source:''};
+  });
+  return map;
+}
+function _makeRateResolver(empResolvedRate,projectRateFallback){
+  return function(empName,jobName){
+    var info=empResolvedRate[empName];
+    if(info&&info.rate>0)return info.rate;
+    if(jobName){var j=jobDefs.find(function(x){return x.name===jobName});if(j&&parseFloat(j.hourlyRate)>0)return parseFloat(j.hourlyRate)}
+    return projectRateFallback||defRate||0;
+  };
+}
 function initAnalytics(){
   // Populate week selector
   fetch((SYNC_URL+'/weeks')).then(function(r){return r.json()}).then(function(res){
@@ -3334,6 +3383,19 @@ function _anaApplyFilters(projFilter,empFilter,weeks,builderFilter){
   if(empFilter)filtered=filtered.filter(function(d){return d.employee===empFilter});
   // Store all filters for sub-tabs (builderFilter narrows jobs to that client/builder)
   window._anaFiltered=filtered;window._anaProjFilter=projFilter;window._anaWeeksList=weeks;window._anaBuilderFilter=builderFilter||'';
+  /* R4 fix: if project filter is set AND it belongs to a different builder than
+     the builder filter, spell that out instead of the generic "No data found".
+     The two filters were intersected to nothing — be explicit about why. */
+  if(projFilter&&builderFilter){
+    var _pf=jobDefs.find(function(j){return j.name===projFilter});
+    if(_pf&&_pf.builderId&&_pf.builderId!==builderFilter){
+      var _bName=(clients.find(function(c){return c.id===builderFilter})||{}).name||'(unknown builder)';
+      var _pBName=(clients.find(function(c){return c.id===_pf.builderId})||{}).name||'(no builder)';
+      document.getElementById('ana_sum').innerHTML='<div style="text-align:center;color:var(--org);padding:20px;background:var(--org-lt);border-radius:10px"><strong>Filter conflict</strong><br><br>Project "<strong>'+esc(projFilter)+'</strong>" belongs to builder "<strong>'+esc(_pBName)+'</strong>", not "<strong>'+esc(_bName)+'</strong>".<br><br>Clear one of the filters — set Project back to <em>All Projects</em>, or switch Builder to <em>'+esc(_pBName)+'</em>.</div>';
+      document.getElementById('anaTabs').style.display='';
+      return;
+    }
+  }
   if(!filtered.length){document.getElementById('ana_sum').innerHTML='<div style="text-align:center;color:#aaa;padding:20px">No data found for selected filters.</div>';document.getElementById('anaTabs').style.display='';return}
   document.getElementById('anaTabs').style.display='';
   buildAllAnaTabs();
@@ -3415,29 +3477,17 @@ function buildAllAnaTabs(){
   var budgets={};jobDefs.forEach(function(j){if(j.budget)budgets[j.name]=j.budget});
   // Collect MYOB cost data for cost integration
   var myobAll=_anaMyobCache||{};
+  /* empCostMap is the legacy MYOB-only structure used by the "True Labour Cost"
+     metric card. Keep it for backward compat — empResolvedRate below is the
+     unified priority resolver used by every cost calc. */
   var empCostMap={};employees.forEach(function(emp){
     var totalGross=0,totalHrs=0;
     Object.keys(myobAll).forEach(function(wk){var m=myobAll[wk]||{};var d=m[emp.id];if(d){totalGross+=(d.gross||0);totalHrs+=(d.hours||0)}});
     if(totalGross>0){var role=emp.role||'worker';var hrRate=emp.hourlyRate||55;var c=calcWageCost(totalGross,hrRate,totalHrs||40,role,'non_eba');empCostMap[emp.name]={total:c.total,perHour:c.perHour,gross:totalGross}}
   });
-  /* Per-employee resolved rate, in priority order:
-       1. MYOB perHour (true cost incl. on-costs) — already computed in empCostMap
-       2. Employee custom rate (employees[].hourlyRate) — overrides project rate
-       3. (per-chunk fallback by _rateFor: project hourlyRate, then defRate)
-     Changing an employee's custom rate immediately re-prices their hours across
-     every Analytics tab — Summary, By Employee, By Job, By Task, OT alerts. */
-  var empResolvedRate={};employees.forEach(function(emp){
-    var info=empCostMap[emp.name];
-    if(info&&info.perHour>0){empResolvedRate[emp.name]={rate:info.perHour,source:'myob'};return}
-    if(parseFloat(emp.hourlyRate)>0){empResolvedRate[emp.name]={rate:parseFloat(emp.hourlyRate),source:'custom'};return}
-    empResolvedRate[emp.name]={rate:0,source:''};
-  });
-  function _rateFor(empName,jobName){
-    var info=empResolvedRate[empName];
-    if(info&&info.rate>0)return info.rate;
-    if(jobName){var j=jobDefs.find(function(x){return x.name===jobName});if(j&&parseFloat(j.hourlyRate)>0)return parseFloat(j.hourlyRate)}
-    return rate||defRate||0;
-  }
+  /* R3 fix: use the shared resolver helpers so this and anaExportXlsx can't drift. */
+  var empResolvedRate=_resolveEmpRateMap(myobAll);
+  var _rateFor=_makeRateResolver(empResolvedRate,rate);
   var empSum=[],jobSum={},daySum={},taskSum={},totH=0,totOT=0,totLv=0;
   var weekLabel=emps.length?(emps[0].weekStart||'')+' to '+(emps[0].weekEnd||''):'(no data)';
 
@@ -3965,26 +4015,11 @@ function anaExportXlsx(){
   }
   if(!rate)rate=defRate;
   if(!rate)data.forEach(function(e){if(e.rate)rate=e.rate});
-  /* Per-employee resolved rate (MYOB > custom > project > defRate) — mirrors buildAllAnaTabs.
-     Without this, the export uses a single global rate and ignores per-emp customRate. */
+  /* R3 fix: shared resolver — was previously duplicated byte-for-byte with the
+     one in buildAllAnaTabs. Both now use _resolveEmpRateMap + _makeRateResolver. */
   var myobAllX=_anaMyobCache||{};
-  var empResolvedRateX={};employees.forEach(function(emp){
-    var totalGross=0,totalHrs=0;
-    Object.keys(myobAllX).forEach(function(wk){var m=myobAllX[wk]||{};var d=m[emp.id];if(d){totalGross+=(d.gross||0);totalHrs+=(d.hours||0)}});
-    if(totalGross>0&&totalHrs>0){
-      var role=emp.role||'worker';var hrRate=emp.hourlyRate||55;
-      var c=calcWageCost(totalGross,hrRate,totalHrs||40,role,'non_eba');
-      empResolvedRateX[emp.name]={rate:c.perHour,source:'myob'};return;
-    }
-    if(parseFloat(emp.hourlyRate)>0){empResolvedRateX[emp.name]={rate:parseFloat(emp.hourlyRate),source:'custom'};return}
-    empResolvedRateX[emp.name]={rate:0,source:''};
-  });
-  function _rateForX(empName,jobName){
-    var info=empResolvedRateX[empName];
-    if(info&&info.rate>0)return info.rate;
-    if(jobName){var j=jobDefs.find(function(x){return x.name===jobName});if(j&&parseFloat(j.hourlyRate)>0)return parseFloat(j.hourlyRate)}
-    return rate||defRate||0;
-  }
+  var empResolvedRateX=_resolveEmpRateMap(myobAllX);
+  var _rateForX=_makeRateResolver(empResolvedRateX,rate);
   var wb=XLSX.utils.book_new();
 
   // Style helpers
@@ -4214,10 +4249,21 @@ var _projData=null;
    { jobName: { taskName: usedHours } } — keyed by raw task name (regular + office
    share the same namespace; case-sensitive). */
 var _projTaskUsage={};
+/* R2 fix: session-level cache for _fetchTaskUsage. Without this, every toggle into
+   the Budgets tab re-fetches all weeks (N+1 HTTP). With it, the heavy fetch only
+   happens once per ~5 min — long enough to amortize across tab switches, short
+   enough that recent submissions show up before the data gets stale. */
+var _projTaskUsageCache=null;var _projTaskUsageCacheTs=0;
+var _PROJ_TASK_USAGE_TTL_MS=5*60*1000;
+function invalidateTaskUsageCache(){_projTaskUsageCache=null;_projTaskUsageCacheTs=0}
 function _fetchTaskUsage(){
+  var now=Date.now();
+  if(_projTaskUsageCache&&(now-_projTaskUsageCacheTs)<_PROJ_TASK_USAGE_TTL_MS){
+    return Promise.resolve(_projTaskUsageCache);
+  }
   return fetch(SYNC_URL+'/weeks').then(function(r){return r.json()}).then(function(res){
     var weeks=(res.weeks||[]);
-    if(!weeks.length)return {};
+    if(!weeks.length){_projTaskUsageCache={};_projTaskUsageCacheTs=Date.now();return _projTaskUsageCache}
     var promises=weeks.map(function(wk){
       return fetch(SYNC_URL+'/timesheets?week='+wk).then(function(r){return r.json()}).then(function(j){return(j.timesheets||[])}).catch(function(){return[]});
     });
@@ -4240,6 +4286,7 @@ function _fetchTaskUsage(){
           });
         });
       });
+      _projTaskUsageCache=usage;_projTaskUsageCacheTs=Date.now();
       return usage;
     });
   }).catch(function(){return {}});
@@ -4406,7 +4453,28 @@ function setTaskBudget(jobName,taskName,val){
   svDefs();
   try{audit('task_budget',{job:jobName,task:taskName,budget:isNaN(n)?null:n})}catch(e){}
   if(typeof _bldPushSilent==='function')_bldPushSilent();
+  _renderProjectsPreserveState();
+}
+/* R1 fix: re-render the Budgets list but preserve which cards were expanded and
+   where the panel was scrolled to. Without this, every keystroke save would
+   collapse the card being edited and jump scroll back to the top. */
+function _renderProjectsPreserveState(){
+  var scrollEl=document.querySelector('#adminMo .ap');
+  var scrollTop=scrollEl?scrollEl.scrollTop:0;
+  var openIdxs=[];
+  document.querySelectorAll('[id^="projd_"]').forEach(function(el){
+    if(el.style.display!=='none')openIdxs.push(el.id.replace('projd_',''));
+  });
   renderProjects();
+  requestAnimationFrame(function(){
+    openIdxs.forEach(function(idx){
+      var el=document.getElementById('projd_'+idx);
+      var ar=document.getElementById('projArr_'+idx);
+      if(el)el.style.display='';
+      if(ar)ar.innerHTML='▲';
+    });
+    if(scrollEl)scrollEl.scrollTop=scrollTop;
+  });
 }
 function autoDistributeTaskBudgets(jobName){
   var jd=jobDefs.find(function(j){return j.name===jobName});
@@ -4428,7 +4496,7 @@ function autoDistributeTaskBudgets(jobName){
   try{audit('task_budget_auto',{job:jobName,distributed:remaining,tasks:unallocatedTasks.length})}catch(e){}
   if(typeof _bldPushSilent==='function')_bldPushSilent();
   toast('Distributed '+remaining.toFixed(0)+'h across '+unallocatedTasks.length+' tasks');
-  renderProjects();
+  _renderProjectsPreserveState();
 }
 function resetTaskBudgets(jobName){
   var jd=jobDefs.find(function(j){return j.name===jobName});
@@ -4440,7 +4508,7 @@ function resetTaskBudgets(jobName){
   try{audit('task_budget_reset',{job:jobName})}catch(e){}
   if(typeof _bldPushSilent==='function')_bldPushSilent();
   toast('Task budgets cleared');
-  renderProjects();
+  _renderProjectsPreserveState();
 }
 function togProj(idx){var el=document.getElementById('projd_'+idx);var ar=document.getElementById('projArr_'+idx);if(!el)return;var open=el.style.display==='none';el.style.display=open?'':'none';if(ar)ar.innerHTML=open?'&#9650;':'&#9660;'}
 
@@ -4678,13 +4746,26 @@ function importMyobXlsx(input){
       });
       if(colGross<0){alert('Missing "Gross" column');return}
 
-      // Also try to extract week from title row
-      var wk=document.getElementById('costWeek').value;
+      /* M7 fix: extract week from the title row and validate it matches the
+         currently selected week. If they differ, prompt before importing —
+         otherwise admin can silently overwrite the wrong week's MYOB data. */
+      var selectedWk=document.getElementById('costWeek').value;
+      var wk=selectedWk;
+      var fileWk=null;
       if(rows[0]&&rows[0][0]){
         var titleStr=String(rows[0][0]);
         var wkMatch=titleStr.match(/\d{4}-\d{2}-\d{2}/);
-        if(wkMatch)wk=wkMatch[0];
+        if(wkMatch)fileWk=wkMatch[0];
       }
+      if(fileWk&&selectedWk&&fileWk!==selectedWk){
+        if(!confirm('Week mismatch!\n\nFile is for week: '+fileWk+'\nCurrently selected: '+selectedWk+'\n\nImport into file’s week ('+fileWk+') instead? Cancel to abort.')){return}
+        wk=fileWk;
+      }else if(fileWk){
+        wk=fileWk;
+      }
+      /* Validate that wk is a plausible date (YYYY-MM-DD) — otherwise the
+         downstream save would target an invalid key. */
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(wk)){alert('Could not determine which week this file applies to. Make sure the title row contains a YYYY-MM-DD date or select a valid week before importing.');return}
 
       var imported=0;
       for(var r2=hdrIdx+1;r2<rows.length;r2++){
@@ -5498,7 +5579,11 @@ function validateHard(){
       }
     }
     if(d.hours<=0&&!d.partialLeave)return; // no hours = skip (weekend or day off)
-    if(d.hours<=0)return;
+    /* B1 fix: hours=0 + partialLeave set is an inconsistent state (UI hides the
+       partial-leave dropdown when work hours are 0, so this only happens from
+       stale data before the B2 fix). Flag it so the employee resolves it rather
+       than silently submitting a corrupt row. */
+    if(d.hours<=0){fails.push(d.day+': "'+d.partialLeave+'" top-up selected but no work hours — enter Start/Finish times for a partial day, or change the leave to a full-day type');return}
     // Must have at least one job with a name
     var hasJob=(d.jobs||[]).some(function(j){return j.name&&j.name.trim()});
     if(!hasJob){fails.push(d.day+': has '+d.hours.toFixed(1)+'h but no job selected');return}
@@ -5545,7 +5630,7 @@ function confirmSubmit(){
   var body={employee:data.employee,weekStart:dk(ws),data:data,totalHours:totH,status:'submitted',submittedAt:meta.submittedAt};
   if(currentEmp)body.employeeId=currentEmp.id;
   fetch((SYNC_URL+'/timesheet'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(function(r){return r.json()}).then(function(){toast('\u2705 Week submitted')}).catch(function(){enqueueOffline(body);toast('\u26A0\uFE0F Saved offline — will retry')});
+    .then(function(r){return r.json()}).then(function(){if(typeof invalidateTaskUsageCache==='function')invalidateTaskUsageCache();toast('\u2705 Week submitted')}).catch(function(){enqueueOffline(body);toast('\u26A0\uFE0F Saved offline — will retry')});
   showSubBanner();
 }
 function requestUnlock(){
@@ -6032,7 +6117,7 @@ function dashApprove(empId,empName,wkKey){
     var body={employee:data.employee||empName,weekStart:wkKey,data:data,totalHours:totH,status:'approved',approvedAt:data.approvedAt,approvedBy:'admin'};
     if(empId)body.employeeId=empId;
     fetch((SYNC_URL+'/timesheet'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-      .then(function(){audit('approve',{week:wkKey,emp:empName});toast('\u2713 '+empName+' approved');refreshDashboard()})
+      .then(function(){audit('approve',{week:wkKey,emp:empName});if(typeof invalidateTaskUsageCache==='function')invalidateTaskUsageCache();toast('\u2713 '+empName+' approved');refreshDashboard()})
       .catch(function(e){alert('Approve failed: '+e.message)});
   });
 }
@@ -6047,7 +6132,7 @@ function dashReopen(empId,empName,wkKey){
     var body={employee:data.employee||empName,weekStart:wkKey,data:data,totalHours:totH,status:'draft'};
     if(empId)body.employeeId=empId;
     fetch((SYNC_URL+'/timesheet'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-      .then(function(){audit('reopen',{week:wkKey,emp:empName});toast('\u2713 '+empName+' reopened');refreshDashboard()})
+      .then(function(){audit('reopen',{week:wkKey,emp:empName});if(typeof invalidateTaskUsageCache==='function')invalidateTaskUsageCache();toast('\u2713 '+empName+' reopened');refreshDashboard()})
       .catch(function(e){alert('Reopen failed: '+e.message)});
   });
 }
@@ -6816,6 +6901,10 @@ document.addEventListener('visibilitychange',function(){
   else if(typeof cloudSaveFlush==='function')cloudSaveFlush();
 });
 window.addEventListener('pagehide',function(){if(typeof cloudSaveFlush==='function')cloudSaveFlush()});
+/* M10 fix: also flush on beforeunload — pagehide doesn't fire reliably on every
+   browser/exit path (e.g. some desktop browser crashes, OS shutdown). beforeunload
+   is the most universal pre-unload hook. Use sendBeacon-style synchronous flush. */
+window.addEventListener('beforeunload',function(){if(typeof cloudSaveFlush==='function')cloudSaveFlush()});
 /* When the user switches to a different week, FIRST flush any pending save
    for the current week (so the in-flight edit isn't lost to debounce), THEN
    navigate, THEN pull the new week's data. */
