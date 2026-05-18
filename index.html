@@ -3535,7 +3535,7 @@ function _anaApplyFilters(projFilter,empFilter,weeks,builderFilter){
   var filtered=_repData;
   if(empFilter)filtered=filtered.filter(function(d){return d.employee===empFilter});
   // Store all filters for sub-tabs (builderFilter narrows jobs to that client/builder)
-  window._anaFiltered=filtered;window._anaProjFilter=projFilter;window._anaWeeksList=weeks;window._anaBuilderFilter=builderFilter||'';
+  window._anaFiltered=filtered;window._anaProjFilter=projFilter;window._anaWeeksList=weeks;window._anaBuilderFilter=builderFilter||'';window._anaEmpFilter=empFilter||'';
   /* R4 fix: if project filter is set AND it belongs to a different builder than
      the builder filter, spell that out instead of the generic "No data found".
      The two filters were intersected to nothing — be explicit about why. */
@@ -3600,6 +3600,7 @@ function togTD(i){var el=document.getElementById('td_'+i);if(el)el.style.display
 function buildAllAnaTabs(){
   var projFilter=window._anaProjFilter||'';
   var builderFilter=window._anaBuilderFilter||'';
+  var empFilter=window._anaEmpFilter||'';
   var emps=window._anaFiltered||_repData;
   /* Pre-build name -> builderId lookup so the main loop can gate jobs by builder
      in O(1) without re-scanning jobDefs per task. */
@@ -3640,6 +3641,16 @@ function buildAllAnaTabs(){
   });
   /* R3 fix: use the shared resolver helpers so this and anaExportXlsx can't drift. */
   var empResolvedRate=_resolveEmpRateMap(myobAll);
+  /* When an employee filter is active and that employee has a resolved rate
+     (MYOB or custom), use it as the "Base Rate" so the card matches what their
+     hours are actually being priced at. Without this, the card kept showing the
+     project/default rate while the cost column showed the employee's rate. */
+  var _rateSource='default';
+  if(projFilter){_rateSource='project'}
+  if(empFilter&&empResolvedRate[empFilter]&&empResolvedRate[empFilter].rate>0){
+    rate=empResolvedRate[empFilter].rate;
+    _rateSource=empResolvedRate[empFilter].source==='myob'?'myob':'custom';
+  }
   var _rateFor=_makeRateResolver(empResolvedRate,rate);
   var empSum=[],jobSum={},daySum={},taskSum={},totH=0,totOT=0,totLv=0;
   var weekLabel=emps.length?(emps[0].weekStart||'')+' to '+(emps[0].weekEnd||''):'(no data)';
@@ -3682,7 +3693,10 @@ function buildAllAnaTabs(){
     });
     var anyFilter=!!(projFilter||builderFilter);
     var effectiveHrs=anyFilter?filteredHrs:hrs;
-    if(anyFilter&&effectiveHrs===0)return; // skip employees with 0 hours under the active filter
+    /* Skip 0-hour employees under a project/builder filter — UNLESS the user
+       explicitly filtered to one employee, in which case they want to see
+       that employee's row even when it's 0 ("Kye has no hours on Farm this week"). */
+    if(anyFilter&&effectiveHrs===0&&!empFilter)return;
     var ot=Math.max(0,effectiveHrs-SETTINGS.weeklyHours);totH+=effectiveHrs;totOT+=ot;totLv+=lv;
     empSum.push({name:emp.employee,hours:effectiveHrs,overtime:ot,leave:lv,days:emp.days,_projFilter:projFilter,_builderFilter:builderFilter,_jobPasses:_jobPasses});
   });
@@ -3749,9 +3763,29 @@ function buildAllAnaTabs(){
   }else if(totCost>0){
     h+='<div class="metric-card"><div class="mk-n" style="color:var(--grn)">$'+totCost.toFixed(0)+'</div><div class="mk-l">Est. Labor Cost</div></div>';
   }
-  if(rate)h+='<div class="metric-card"><div class="mk-n" style="color:var(--grn)">$'+rate.toFixed(2)+'</div><div class="mk-l">Base Rate</div></div>';
+  if(rate){
+    /* Label tells admin where the rate came from — fixes "why is it $65 when
+       Kye's custom rate is $83" confusion. When empFilter is set we use the
+       employee's resolved rate (custom/MYOB), not the project/default rate. */
+    var _rateLabel='Base Rate';
+    if(_rateSource==='myob')_rateLabel='Rate (MYOB)';
+    else if(_rateSource==='custom')_rateLabel='Rate ('+esc(empFilter)+' custom)';
+    else if(_rateSource==='project')_rateLabel='Rate ('+esc(projFilter)+' project)';
+    else _rateLabel='Base Rate (default)';
+    h+='<div class="metric-card"><div class="mk-n" style="color:var(--grn)">$'+rate.toFixed(2)+'</div><div class="mk-l">'+_rateLabel+'</div></div>';
+  }
   h+='</div>';
   h+='<p style="font-size:.78rem;color:#aaa;margin-bottom:10px">Week: '+esc(weekLabel)+'</p>';
+  /* Empty-result hint when a specific employee filter combined with a project
+     or builder filter yields zero hours. Without this the page just shows
+     "TOTAL 0.0h" and feels broken — even though the answer ("Kye didn't log to
+     Farm this week") is legitimate. */
+  if(empFilter&&totH===0&&(projFilter||builderFilter)){
+    var _scopeBits=[];
+    if(projFilter)_scopeBits.push('project <strong>'+esc(projFilter)+'</strong>');
+    if(builderFilter){var _bn=(clients.find(function(c){return c.id===builderFilter})||{}).name||builderFilter;_scopeBits.push('builder <strong>'+esc(_bn)+'</strong>');}
+    h+='<div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:.82rem;color:#b26900"><strong>'+esc(empFilter)+'</strong> has no hours on '+_scopeBits.join(' / ')+' for this week. Try clearing one of the filters, or pick a different week.</div>';
+  }
 
   // Employee hours bar chart
   h+='<div class="rep-chart"><div class="rep-chart-title">Hours by Employee</div>';
