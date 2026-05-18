@@ -25,44 +25,64 @@
    This way switching URLs (admin → employee or vice versa) always produces the
    matching role — no sticky sessions across URL changes. */
 (function(){
-  try{
-    var pin=localStorage.getItem('ts_pin')||'1234';
-    var params=new URLSearchParams(location.search);
-    var urlPin=params.get('admin');
-    if(urlPin===pin){sessionStorage.setItem('ts_is_admin','1')}
+  /* B5+ (v115): admin PIN is SHA-256 hashed (ts_pin_hash). On first load with
+     legacy plain ts_pin, we migrate transparently. The URL still carries the
+     plain PIN (?admin=1234) — the head script hashes urlPin and compares to
+     stored hash. */
+  function _hashHex(s){
+    if(!s||!window.crypto||!crypto.subtle)return Promise.resolve(null);
+    return crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)).then(function(buf){
+      var arr=new Uint8Array(buf),hex='';
+      for(var i=0;i<arr.length;i++)hex+=arr[i].toString(16).padStart(2,'0');
+      return hex;
+    }).catch(function(){return null});
+  }
+  function _applyAdminUI(isAdm){
+    if(isAdm){sessionStorage.setItem('ts_is_admin','1')}
     else{sessionStorage.removeItem('ts_is_admin')}
-    var isAdm=sessionStorage.getItem('ts_is_admin')==='1';
-    /* Handle browser back/forward cache (bfcache) — the IIFE only runs on
-       fresh load, not on bfcache restore. If the URL changed but the role
-       doesn't match anymore, force reload so detection re-runs cleanly. */
-    window.addEventListener('pageshow',function(e){
-      try{
-        var p=new URLSearchParams(location.search).get('admin');
-        var curPin=localStorage.getItem('ts_pin')||'1234';
-        var shouldBeAdmin=(p===curPin);
-        var currentlyAdmin=sessionStorage.getItem('ts_is_admin')==='1';
-        if(shouldBeAdmin!==currentlyAdmin){
-          /* Reload with cache bypass so the page re-renders with correct role */
-          location.reload();
-        }
-      }catch(err){}
-    });
-    /* Inject the manifest link. Single manifest for both roles — admin URL
-       distinction is via the ?admin=PIN param which browsers preserve on
-       "Add to Home Screen". */
-    var link=document.createElement('link');
-    link.rel='manifest';
-    link.id='_mfLink';
-    link.href='manifest.json';
-    document.head.appendChild(link);
-    /* Swap title + apple-title + theme-color so admin "Add to Home Screen"
-       defaults the icon name to "Altitude Admin" (user can still rename). */
     if(isAdm){
       var t=document.getElementById('_appTitle');if(t)t.textContent='Altitude Admin';
       document.title='Altitude Admin';
       var at=document.getElementById('_appleTitle');if(at)at.setAttribute('content','Altitude Admin');
       var tc=document.getElementById('_themeColor');if(tc)tc.setAttribute('content','#1a1f3a');
     }
+  }
+  function _checkAdminRole(){
+    try{
+      var urlPin=new URLSearchParams(location.search).get('admin');
+      if(!urlPin){_applyAdminUI(false);return Promise.resolve(false)}
+      return _hashHex(urlPin).then(function(urlHash){
+        var storedHash=localStorage.getItem('ts_pin_hash');
+        if(storedHash){_applyAdminUI(urlHash===storedHash);return urlHash===storedHash}
+        /* Legacy path: no hash yet. Compare against ts_pin plain (or default
+           '1234'). On match, migrate by storing hash + clearing plain. */
+        var legacy=localStorage.getItem('ts_pin')||'1234';
+        var isAdm=(urlPin===legacy);
+        if(isAdm&&urlHash){localStorage.setItem('ts_pin_hash',urlHash);localStorage.removeItem('ts_pin')}
+        _applyAdminUI(isAdm);return isAdm;
+      });
+    }catch(e){_applyAdminUI(false);return Promise.resolve(false)}
+  }
+  try{
+    /* Inject manifest immediately so the browser doesn't hit a missing-manifest
+       state while the async hash compare runs. Title/theme swap is the only
+       admin-conditional bit, applied inside _applyAdminUI. */
+    var link=document.createElement('link');
+    link.rel='manifest';link.id='_mfLink';link.href='manifest.json';
+    document.head.appendChild(link);
+    _checkAdminRole();
+    window.addEventListener('pageshow',function(){
+      try{
+        var p=new URLSearchParams(location.search).get('admin');
+        var currentlyAdmin=sessionStorage.getItem('ts_is_admin')==='1';
+        if(!p){if(currentlyAdmin)location.reload();return}
+        _hashHex(p).then(function(h){
+          var storedHash=localStorage.getItem('ts_pin_hash');
+          var should=storedHash?(h===storedHash):(p===(localStorage.getItem('ts_pin')||'1234'));
+          if(should!==currentlyAdmin)location.reload();
+        });
+      }catch(err){}
+    });
   }catch(e){}
 })();
 </script>
@@ -1087,7 +1107,30 @@ function doChangePin(){
    Security: strip the PIN from the URL bar immediately after processing so it
    doesn't leak via screenshots, browser history, or Referer headers. */
 var IS_ADMIN=false;
-function _getAdminPin(){return localStorage.getItem('ts_pin')||'1234'}
+/* B5+ (v115): the stored value is now `ts_pin_hash` (SHA-256). Plain `ts_pin`
+   only lingers in a legacy install until the first chgPin migrates it. */
+function _getAdminPinHash(){return localStorage.getItem('ts_pin_hash')||''}
+/* Backwards-compat shim. Returns the LEGACY plain admin PIN if it still exists,
+   otherwise '' (callers should switch to _verifyAdminPin or _getAdminPinHash). */
+function _getAdminPin(){return localStorage.getItem('ts_pin')||(localStorage.getItem('ts_pin_hash')?'':'1234')}
+/* Async PIN check — hashes input and compares to stored hash. Falls back to
+   legacy plain compare during the transition window. Returns Promise<boolean>. */
+function _verifyAdminPin(plain){
+  if(!plain)return Promise.resolve(false);
+  var stored=_getAdminPinHash();
+  var legacy=localStorage.getItem('ts_pin');
+  if(!stored){
+    /* No hash yet — legacy compare. If match, migrate plain → hash. */
+    var def=legacy||'1234';
+    if(String(plain)!==def)return Promise.resolve(false);
+    if(typeof _hashPin==='function'){
+      return _hashPin(plain).then(function(h){if(h){localStorage.setItem('ts_pin_hash',h);localStorage.removeItem('ts_pin')}return true});
+    }
+    return Promise.resolve(true);
+  }
+  if(typeof _hashPin!=='function')return Promise.resolve(false);
+  return _hashPin(plain).then(function(h){return h===stored});
+}
 /* Admin detection + manifest injection ran in the <head> early script.
    Here we just mirror the result into the IS_ADMIN global used throughout. */
 try{IS_ADMIN=sessionStorage.getItem('ts_is_admin')==='1'}catch(e){IS_ADMIN=false}
@@ -2548,43 +2591,64 @@ function chkPin(){
     alert('Too many wrong attempts. Try again in '+secs+'s.');
     return;
   }
-  var pin=_getAdminPin();
-  if(document.getElementById('aPin').value===pin){
-    /* Success — clear fail counter, set admin session, flip role UI. */
-    localStorage.removeItem(fk);
-    sessionStorage.setItem('ts_is_admin','1');
-    IS_ADMIN=true;
-    /* Also sync URL to match role — so reload keeps admin, and URL visually
-       reflects role. If user later navigates to / without ?admin, the early
-       detection will flip back to employee cleanly. */
+  /* B5+ (v115): hash-based admin PIN check. _verifyAdminPin handles legacy
+     migration automatically on first successful login. */
+  var entered=document.getElementById('aPin').value;
+  _verifyAdminPin(entered).then(function(ok){
+    if(ok){
+      localStorage.removeItem(fk);
+      sessionStorage.setItem('ts_is_admin','1');
+      IS_ADMIN=true;
+      /* Sync URL to match role using the entered (plain) PIN — only piece that
+         knows the plain text. This keeps the bookmarkable ?admin=<pin> URL. */
+      try{
+        var p=new URLSearchParams(location.search);
+        if(p.get('admin')!==entered){
+          p.set('admin',entered);
+          history.replaceState(null,'',location.pathname+'?'+p.toString()+location.hash);
+        }
+      }catch(e){}
+      if(typeof applyRoleUI==='function')applyRoleUI();
+      document.getElementById('aLogin').style.display='none';
+      document.getElementById('aCont').style.display='';
+      showAdminTab('dash');
+      renderAdmin();
+    }else{
+      var fails=(parseInt(fs.count)||0)+1;
+      fs.count=fails;
+      var waitSec=0;
+      if(fails===5)waitSec=30;
+      else if(fails===6)waitSec=120;
+      else if(fails===7)waitSec=600;
+      else if(fails>=8)waitSec=1800;
+      if(waitSec)fs.lockUntil=now+waitSec*1000;
+      localStorage.setItem(fk,JSON.stringify(fs));
+      if(waitSec)alert('Incorrect PIN. Too many attempts — locked for '+waitSec+'s.');
+      else alert('Incorrect PIN ('+(5-fails>0?(5-fails)+' attempts before lockout)':'next wrong attempt triggers lockout)'));
+    }
+  });
+}
+function chgPin(){
+  var np=document.getElementById('aNewPin').value.trim();
+  if(!np||np.length<4){alert('PIN must be 4+ chars');return}
+  /* B5+ (v115): hash the new PIN, store as ts_pin_hash, remove plain ts_pin.
+     The new PIN is shown ONCE in the toast — admin needs to write it down or
+     remember it for the URL ?admin=<pin> bookmark. */
+  _hashPin(np).then(function(newHash){
+    var oldHash=localStorage.getItem('ts_pin_hash')||'';
+    localStorage.setItem('ts_pin_hash',newHash);
+    localStorage.removeItem('ts_pin');
+    document.getElementById('aNewPin').value='';
+    /* Last-2-digits hint logged but full PIN never persisted in audit. */
+    try{audit('admin_pin_change',{from_hash_prefix:oldHash?oldHash.slice(0,8)+'...':'(unset)',to_hash_prefix:newHash.slice(0,8)+'...',to_pin_suffix:'***'+np.slice(-2)})}catch(e){}
+    /* Update the URL to match the new PIN so bookmarks/reloads work right away. */
     try{
       var p=new URLSearchParams(location.search);
-      if(p.get('admin')!==pin){
-        p.set('admin',pin);
-        history.replaceState(null,'',location.pathname+'?'+p.toString()+location.hash);
-      }
+      if(p.get('admin')){p.set('admin',np);history.replaceState(null,'',location.pathname+'?'+p.toString()+location.hash)}
     }catch(e){}
-    if(typeof applyRoleUI==='function')applyRoleUI();
-    document.getElementById('aLogin').style.display='none';
-    document.getElementById('aCont').style.display='';
-    showAdminTab('dash');
-    renderAdmin();
-  }else{
-    var fails=(parseInt(fs.count)||0)+1;
-    fs.count=fails;
-    /* Backoff schedule: 0-4 fails → no lock; 5 → 30s; 6 → 2min; 7 → 10min; 8+ → 30min */
-    var waitSec=0;
-    if(fails===5)waitSec=30;
-    else if(fails===6)waitSec=120;
-    else if(fails===7)waitSec=600;
-    else if(fails>=8)waitSec=1800;
-    if(waitSec)fs.lockUntil=now+waitSec*1000;
-    localStorage.setItem(fk,JSON.stringify(fs));
-    if(waitSec)alert('Incorrect PIN. Too many attempts — locked for '+waitSec+'s.');
-    else alert('Incorrect PIN ('+(5-fails>0?(5-fails)+' attempts before lockout)':'next wrong attempt triggers lockout)'));
-  }
+    toast('PIN updated to: '+np+' (write this down for the ?admin=<PIN> URL)');
+  });
 }
-function chgPin(){var np=document.getElementById('aNewPin').value.trim();if(!np||np.length<4){alert('PIN must be 4+ chars');return}var oldPin=localStorage.getItem('ts_pin')||'';localStorage.setItem('ts_pin',np);document.getElementById('aNewPin').value='';/* M6 fix: audit admin PIN change so a compromised PIN leaves a trail (PIN value itself NOT logged — only last 2 digits as a recovery hint). */try{audit('admin_pin_change',{from_suffix:oldPin?'***'+oldPin.slice(-2):'(unset)',to_suffix:'***'+np.slice(-2)})}catch(e){}toast('PIN updated')}
 function svRate(){var r=parseFloat(document.getElementById('aRate').value)||0;defRate=r;localStorage.setItem('ts_rate',String(r));document.getElementById('rateShow').textContent=r>0?'$'+r.toFixed(2)+'/hr':'';toast('Rate saved')}
 
 function renderAdmin(){
@@ -2883,7 +2947,11 @@ function _propagateJobRename(oldName,newName,cb){
     Promise.all(fetches).then(function(){
       if(!updates.length){cb&&cb(0);return}
       var done=0,ok=0;
+      /* M5 (v115): admin rewriting historical timesheets — include adminKey so
+         the edge function's lock check allows writes to submitted/approved weeks. */
+      var _admKey=_getAdminPinHash();
       updates.forEach(function(body){
+        body.adminKey=_admKey;
         fetch(SYNC_URL+'/timesheet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
           .then(function(r){return r.json()}).then(function(){ok++})
           .catch(function(){})
@@ -3078,7 +3146,11 @@ function _propagateTaskRename(jobName,oldName,newName,cb){
     Promise.all(fetches).then(function(){
       if(!updates.length){cb&&cb(0);return}
       var done=0,ok=0;
+      /* M5 (v115): admin rewriting historical timesheets — include adminKey so
+         the edge function's lock check allows writes to submitted/approved weeks. */
+      var _admKey=_getAdminPinHash();
       updates.forEach(function(body){
+        body.adminKey=_admKey;
         fetch(SYNC_URL+'/timesheet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
           .then(function(r){return r.json()}).then(function(){ok++})
           .catch(function(){})
@@ -5438,7 +5510,9 @@ function sendReminderTest(){
   var adm=document.getElementById('rmAdm').value.trim();
   if(!adm){alert('Set the admin / CC email first and save, then retry');return}
   var st=document.getElementById('rmStatus');st.textContent='Sending test preview to '+adm+'…';
-  fetch(SYNC_URL+'/send-reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({test:true,adminKey:_getAdminPin()})})
+  /* M5 (v115): adminKey is now the SHA-256 hash. Edge function must compare to
+     ADMIN_PIN_HASH env var. See supabase-edge-function-patch.md. */
+  fetch(SYNC_URL+'/send-reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({test:true,adminKey:_getAdminPinHash()})})
     .then(function(r){return r.json()}).then(function(res){
       if(res.ok){st.innerHTML='✓ Test sent to '+esc(adm)+' — week '+esc(res.weekStart||'')+' — '+(res.outstanding?res.outstanding.length:0)+' would be pinged: '+esc((res.outstanding||[]).join(', ')||'nobody')}
       else{st.textContent='Test failed: '+(res.error||'?')+(res.error&&res.error.indexOf('RESEND_API_KEY')!==-1?' — Set the RESEND_API_KEY secret in Supabase first':'')}
@@ -5447,7 +5521,7 @@ function sendReminderTest(){
 function sendRemindersNow(){
   if(!confirm('Send the real reminder emails right now for last week? Employees with no submission will receive an email. Already-sent reminders will be skipped.'))return;
   var st=document.getElementById('rmStatus');st.textContent='Running reminders…';
-  fetch(SYNC_URL+'/send-reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminKey:_getAdminPin()})})
+  fetch(SYNC_URL+'/send-reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminKey:_getAdminPinHash()})})
     .then(function(r){return r.json()}).then(function(res){
       if(res.ok){
         var snt=(res.sent||[]).length,skp=(res.skipped||[]).length,err=(res.errors||[]).length;
@@ -6211,6 +6285,10 @@ function dashApprove(empId,empName,wkKey){
     var totH=0;(data.days||[]).forEach(function(dd){totH+=dd.hours||0});
     var body={employee:data.employee||empName,weekStart:wkKey,data:data,totalHours:totH,status:'approved',approvedAt:data.approvedAt,approvedBy:'admin'};
     if(empId)body.employeeId=empId;
+    /* M5 (v115): include adminKey (PIN hash) so the edge function can verify
+       this is an authenticated admin write to a locked week. See
+       supabase-edge-function-patch.md for the matching server-side check. */
+    body.adminKey=_getAdminPinHash();
     fetch((SYNC_URL+'/timesheet'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(){audit('approve',{week:wkKey,emp:empName});if(typeof invalidateTaskUsageCache==='function')invalidateTaskUsageCache();toast('\u2713 '+empName+' approved');refreshDashboard()})
       .catch(function(e){alert('Approve failed: '+e.message)});
@@ -6226,6 +6304,7 @@ function dashReopen(empId,empName,wkKey){
     var totH=0;(data.days||[]).forEach(function(dd){totH+=dd.hours||0});
     var body={employee:data.employee||empName,weekStart:wkKey,data:data,totalHours:totH,status:'draft'};
     if(empId)body.employeeId=empId;
+    body.adminKey=_getAdminPinHash();
     fetch((SYNC_URL+'/timesheet'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(){audit('reopen',{week:wkKey,emp:empName});if(typeof invalidateTaskUsageCache==='function')invalidateTaskUsageCache();toast('\u2713 '+empName+' reopened');refreshDashboard()})
       .catch(function(e){alert('Reopen failed: '+e.message)});
