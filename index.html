@@ -6266,7 +6266,10 @@ function refreshDashboard(){
   fetch((SYNC_URL+'/weeks')).then(function(rs){return rs.json()}).then(function(res){
     var weeks=(res.weeks||[]).filter(function(wk){if(r.from&&wk<r.from)return false;if(r.to&&wk>r.to)return false;return true});
     if(!weeks.length){_cloudHist=[];_populateTsFilters();tsRefilter();drawDashChart(document.getElementById('dashChart'));return}
-    var promises=weeks.map(function(wk){return fetch((SYNC_URL+'/timesheets')+'?week='+wk).then(function(rs2){return rs2.json()}).then(function(j){return(j.timesheets||[]).map(function(t){var d=t.data||t;return{weekStart:wk,employeeId:d.employeeId||t.employeeId||'',employee:d.employee||t.employee||'',status:d.status||t.status||'draft',submittedAt:d.submittedAt||t.submittedAt||null,approvedAt:d.approvedAt||null,approvedBy:d.approvedBy||null,totalHours:_recalcTotal(d,t.totalHours),raw:d,id:t.id}})}).catch(function(){return[]})});
+    /* Bug fix: was missing the _isSystemRecord filter on the multi-week path,
+       so MYOB pseudo-employee records (employee=__MYOB_SYSTEM__) leaked into
+       _cloudHist and showed up as fake "draft" rows in the Timesheets tab. */
+    var promises=weeks.map(function(wk){return fetch((SYNC_URL+'/timesheets')+'?week='+wk).then(function(rs2){return rs2.json()}).then(function(j){return(j.timesheets||[]).filter(function(t){return !_isSystemRecord(t)}).map(function(t){var d=t.data||t;return{weekStart:wk,employeeId:d.employeeId||t.employeeId||'',employee:d.employee||t.employee||'',status:d.status||t.status||'draft',submittedAt:d.submittedAt||t.submittedAt||null,approvedAt:d.approvedAt||null,approvedBy:d.approvedBy||null,totalHours:_recalcTotal(d,t.totalHours),raw:d,id:t.id}})}).catch(function(){return[]})});
     Promise.all(promises).then(function(arrs){
       _cloudHist=[].concat.apply([],arrs).filter(function(h){return h.status!=='deleted'});
       _cloudHist.sort(function(a,b){var c=(b.weekStart||'').localeCompare(a.weekStart||'');return c||(a.employee||'').localeCompare(b.employee||'')});
@@ -6286,8 +6289,9 @@ function _populateTsFilters(){
   // Project dropdown from loaded data
   var projs={};_cloudHist.forEach(function(h){((h.raw||{}).days||[]).forEach(function(d){(d.jobs||[]).forEach(function(j){if(j.name)projs[j.name]=true})})});
   var pSel=document.getElementById('tsProj');if(pSel){var prev=pSel.value;pSel.innerHTML='<option value="">All projects</option>';Object.keys(projs).sort().forEach(function(p){var o=document.createElement('option');o.value=p;o.textContent=p;pSel.appendChild(o)});if(prev)pSel.value=prev}
-  // Employee dropdown — full active roster + any loaded data names
-  var eSel=document.getElementById('tsEmp');if(eSel){var prevE=eSel.value;var names={};employees.filter(function(e){return e.status!=='archived'}).forEach(function(e){names[e.name]=true});_cloudHist.forEach(function(h){if(h.employee)names[h.employee]=true});eSel.innerHTML='<option value="">All employees</option>';Object.keys(names).sort().forEach(function(n){var o=document.createElement('option');o.value=n;o.textContent=n;eSel.appendChild(o)});if(prevE)eSel.value=prevE}
+  // Employee dropdown — full active roster + any loaded data names.
+  // Defensive: strip any "__SYSTEM__"-style sentinel names (MYOB pseudo-records etc.).
+  var eSel=document.getElementById('tsEmp');if(eSel){var prevE=eSel.value;var names={};employees.filter(function(e){return e.status!=='archived'}).forEach(function(e){names[e.name]=true});_cloudHist.forEach(function(h){if(h.employee&&!/^__.*__$/.test(h.employee))names[h.employee]=true});eSel.innerHTML='<option value="">All employees</option>';Object.keys(names).sort().forEach(function(n){var o=document.createElement('option');o.value=n;o.textContent=n;eSel.appendChild(o)});if(prevE)eSel.value=prevE}
 }
 function _tsFiltered(){
   var emp=(document.getElementById('tsEmp')||{}).value||'';
