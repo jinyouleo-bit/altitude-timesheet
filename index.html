@@ -6119,11 +6119,25 @@ function setEmpRole(id,role){
 function setEmpRate(id,val){
   var e=findEmp(id);if(!e)return;
   var rate=parseFloat(val);
+  var prev=e.hourlyRate;
   if(val===''||isNaN(rate)){delete e.hourlyRate;}else{e.hourlyRate=rate;}
-  svEmps();renderEmployees();
-  audit('emp_rate',{name:e.name,rate:e.hourlyRate||'project default'});
-  toast(e.name+': rate '+(e.hourlyRate?'$'+e.hourlyRate+'/hr':'reset to project default'));
+  svEmps();
+  /* Visual save confirmation: briefly flash the input green so admin sees the
+     change persisted (was silent before, easy to leave the field with onchange
+     never firing and assume the value was saved). */
+  try{
+    var _inp=document.querySelector('input[onchange*="setEmpRate(\''+id+'\'"]');
+    if(_inp){
+      var _origBg=_inp.style.background||'';var _origBorder=_inp.style.borderColor||'';
+      _inp.style.background='#e8f5e9';_inp.style.borderColor='#43a047';
+      setTimeout(function(){_inp.style.background=_origBg;_inp.style.borderColor=_origBorder},900);
+    }
+  }catch(_){}
+  audit('emp_rate',{name:e.name,from:prev||'(default)',to:e.hourlyRate||'(default)'});
+  toast('✓ '+e.name+': '+(e.hourlyRate?'rate $'+e.hourlyRate+'/hr saved':'rate cleared (back to project default)'));
   pushEmpsSilently();
+  /* Don't full-renderEmployees here — that would lose focus + cursor. The
+     visual flash already confirms; the new value re-renders on next modal open. */
 }
 function setEmpEmail(id,val){
   var e=findEmp(id);if(!e)return;
