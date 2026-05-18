@@ -2968,23 +2968,38 @@ function renameJob(ji,inp){
   if(nv===jobDefs[ji].name)return;
   _doRenameJob(ji,nv);
 }
-function setJobBudget(ji,val){jobDefs[ji].budget=parseFloat(val)||0;svDefs();toast('Budget updated')}
-function setJobTotalBudget(ji,val){jobDefs[ji].totalBudget=parseFloat(val)||0;svDefs();toast('Total budget updated')}
-function setJobStartDate(ji,val){jobDefs[ji].startDate=val||'';svDefs();toast('Start date updated')}
-function setJobDeadline(ji,val){jobDefs[ji].deadline=val||'';svDefs();toast('Deadline updated')}
-function setJobAddress(ji,val){jobDefs[ji].address=(val||'').trim();svDefs();toast('Site address updated')}
-function setJobSiteContact(ji,val){jobDefs[ji].siteContact=(val||'').trim();svDefs();toast('Site contact updated')}
-function setJobSiteNotes(ji,val){jobDefs[ji].siteNotes=(val||'').trim();svDefs();toast('Site notes updated')}
-function toggleJobStatus(ji){jobDefs[ji].status=(jobDefs[ji].status==='archived'?'active':'archived');svDefs();renderAdmin();build();toast('Job '+(jobDefs[ji].status==='archived'?'archived':'reactivated'))}
+/* v123: every setJobX function now auto-pushes to cloud (matches employee CRUD
+   + builder CRUD + task budget). Previously these were local-only — admin had
+   to click "Publish Updates" or risk losing edits to the next cloudSync.
+   _bldPushSilent() debounces / catches errors internally. */
+function setJobBudget(ji,val){jobDefs[ji].budget=parseFloat(val)||0;svDefs();_bldPushSilent();toast('Budget updated')}
+function setJobTotalBudget(ji,val){jobDefs[ji].totalBudget=parseFloat(val)||0;svDefs();_bldPushSilent();toast('Total budget updated')}
+function setJobStartDate(ji,val){jobDefs[ji].startDate=val||'';svDefs();_bldPushSilent();toast('Start date updated')}
+function setJobDeadline(ji,val){jobDefs[ji].deadline=val||'';svDefs();_bldPushSilent();toast('Deadline updated')}
+function setJobAddress(ji,val){jobDefs[ji].address=(val||'').trim();svDefs();_bldPushSilent();toast('Site address updated')}
+function setJobSiteContact(ji,val){jobDefs[ji].siteContact=(val||'').trim();svDefs();_bldPushSilent();toast('Site contact updated')}
+function setJobSiteNotes(ji,val){jobDefs[ji].siteNotes=(val||'').trim();svDefs();_bldPushSilent();toast('Site notes updated')}
+function toggleJobStatus(ji){jobDefs[ji].status=(jobDefs[ji].status==='archived'?'active':'archived');svDefs();renderAdmin();build();_bldPushSilent();toast('Job '+(jobDefs[ji].status==='archived'?'archived':'reactivated'))}
 function setJobType(ji,val){
-  jobDefs[ji].projectType=val;
+  /* v123 fix: switching tier no longer silently overwrites a custom rate. If
+     the new tier's default rate differs from what's already set, prompt admin
+     first — otherwise an accidental tier toggle wiped out their custom rate. */
   var tiers=_getRateTiers();var tier=tiers.find(function(t){return t.id===val});
+  var curRate=parseFloat(jobDefs[ji].hourlyRate)||0;
+  if(tier&&curRate>0&&Math.abs(tier.rate-curRate)>0.01){
+    if(!confirm('Change type to "'+tier.name+'" and overwrite the current rate $'+curRate.toFixed(2)+'/hr with the tier default $'+tier.rate+'/hr?\n\nClick Cancel to keep your custom $'+curRate.toFixed(2)+'/hr rate and only change the type label.')){
+      jobDefs[ji].projectType=val;svDefs();renderAdmin();_bldPushSilent();
+      toast('Type set to '+tier.name+' (rate kept at $'+curRate.toFixed(2)+'/hr)');
+      return;
+    }
+  }
+  jobDefs[ji].projectType=val;
   if(tier)jobDefs[ji].hourlyRate=tier.rate;
-  svDefs();renderAdmin();
+  svDefs();renderAdmin();_bldPushSilent();
   var label=tier?tier.name:val.toUpperCase().replace('_',' ');
   toast('Type set to '+label+(val==='custom'?' — set your rate below':' — rate $'+jobDefs[ji].hourlyRate+'/hr'));
 }
-function setJobRate(ji,val){jobDefs[ji].hourlyRate=parseFloat(val)||0;svDefs();toast('Hourly rate updated')}
+function setJobRate(ji,val){jobDefs[ji].hourlyRate=parseFloat(val)||0;svDefs();_bldPushSilent();toast('Hourly rate updated')}
 function addJobDef(){var inp=document.getElementById('aNewJob');var name=inp.value.trim();if(!name)return;if(jobDefs.find(function(j){return j.name===name})){alert('"'+name+'" already exists');return}
   var typeEl=document.getElementById('aNewJobType');var pType=typeEl?typeEl.value:'non_eba';
   var tiers=_getRateTiers();var tier=tiers.find(function(t){return t.id===pType});
