@@ -5941,11 +5941,26 @@ function validateHard(){
     // Must have at least one job with a name
     var hasJob=(d.jobs||[]).some(function(j){return j.name&&j.name.trim()});
     if(!hasJob){fails.push(d.day+': has '+d.hours.toFixed(1)+'h but no job selected');return}
-    // Each job must have at least one task with a name
+    /* v125: strict integrity check. Each job NAME must match an existing jobDef
+       (active OR archived — archive is fine for historical edits), and each
+       task NAME must be in that jobDef's tasks[] or officeTasks[]. Prevents
+       free-text typos and the kind of orphan data we had to clean up earlier. */
     (d.jobs||[]).forEach(function(j){
       if(!j.name||!j.name.trim())return;
       var hasTask=(j.tasks||[]).some(function(t){return t.name&&t.name.trim()});
       if(!hasTask)fails.push(d.day+' → '+j.name+': no task selected');
+      var jd=(jobDefs||[]).find(function(x){return x.name===j.name});
+      if(!jd){
+        fails.push(d.day+' → "'+j.name+'": project doesn’t exist in the project list. Sync and pick from the dropdown.');
+        return;
+      }
+      var allowed={};(jd.tasks||[]).forEach(function(t){allowed[t]=true});(jd.officeTasks||[]).forEach(function(t){allowed[t]=true});
+      (j.tasks||[]).forEach(function(t){
+        if(!t.name||!t.name.trim())return;
+        if(!allowed[t.name]){
+          fails.push(d.day+' → '+j.name+' → "'+t.name+'": task isn’t in this project’s task list. Pick a real task from the dropdown.');
+        }
+      });
     });
     // Task-hour sum must equal work-day hours (start/finish, break NOT deducted) for working days.
     // Partial-leave top-up is excluded — tasks only cover the actual worked portion.
