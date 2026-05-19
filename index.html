@@ -1523,12 +1523,33 @@ function _lockAdminInputs(){
   var sb=document.getElementById('submitBtn');if(sb){sb.disabled=true;sb.style.opacity='0.5'}
 }
 function _unlockAdminInputs(){
-  // Keep banner visible but flip to green "editing enabled" state so admin has a clear indicator + one-click relock
+  /* v126: check status before unlocking. Approved weeks stay locked \u2014 admin
+     must Reopen to edit hours, or use Projects tab \u2192 Rename for task labels. */
+  var status='';
+  try{
+    if(typeof _adminEdit!=='undefined'&&_adminEdit&&_adminEdit.origStatus){status=_adminEdit.origStatus}
+    else if(typeof getWeekMeta==='function'){var m=getWeekMeta(dk(ws));if(m)status=m.status||''}
+  }catch(e){}
+  if(status==='approved'){
+    var banner=document.getElementById('adminLockBanner');
+    if(banner){banner.style.display='';banner.style.background='#fef3c7';banner.style.borderColor='#fcd34d'}
+    var ico=document.getElementById('adminLockIcon');if(ico)ico.textContent='\uD83D\uDD12';
+    var txt=document.getElementById('adminLockText');
+    if(txt){txt.innerHTML='<strong>APPROVED \u2014 hours locked.</strong> To rename a task/project name, use Projects tab. To edit hours, Reopen the week first.';txt.style.color='#92400e'}
+    var btn=document.getElementById('adminUnlockBtn');if(btn){btn.innerHTML='\uD83D\uDC41 View only (approved)';btn.style.background='#92400e';btn.disabled=true;btn.style.opacity='0.7';btn.style.cursor='not-allowed'}
+    /* Keep destructive fields locked. Notes are still editable as admin annotations. */
+    var days=document.getElementById('days');if(!days)return;
+    days.querySelectorAll('input,select,textarea').forEach(function(el){el.disabled=true;el.style.opacity='0.6'});
+    days.querySelectorAll('button').forEach(function(el){el.disabled=true;el.style.opacity='0.4'});
+    _adminEditMode=false;
+    return;
+  }
+  // Draft / submitted \u2014 full unlock (current behaviour)
   var banner=document.getElementById('adminLockBanner');
   if(banner){banner.style.display='';banner.style.background='#e8f5e9';banner.style.borderColor='#a5d6a7'}
   var ico=document.getElementById('adminLockIcon');if(ico)ico.textContent='\uD83D\uDD13';
   var txt=document.getElementById('adminLockText');if(txt){txt.textContent='Unlocked \u2014 admin editing enabled';txt.style.color='#2e7d32'}
-  var btn=document.getElementById('adminUnlockBtn');if(btn){btn.innerHTML='\uD83D\uDD12 Lock again';btn.style.background='#2e7d32'}
+  var btn=document.getElementById('adminUnlockBtn');if(btn){btn.innerHTML='\uD83D\uDD12 Lock again';btn.style.background='#2e7d32';btn.disabled=false;btn.style.opacity='';btn.style.cursor=''}
   var days=document.getElementById('days');if(!days)return;
   days.querySelectorAll('input,select,textarea').forEach(function(el){el.disabled=false;el.style.opacity=''});
   days.querySelectorAll('button').forEach(function(el){el.disabled=false;el.style.opacity=''});
@@ -6675,12 +6696,27 @@ function editHistTimesheet(idx){
   if(!IS_ADMIN){alert('Admin only');return}
   var list=_histFilteredCloud();var item=list[idx];if(!item)return;
   var raw=item.raw||{};
+  var _origStatus=item.status||raw.status||'draft';
+  /* v126: approved weeks open in VIEW-ONLY mode. Hours are sacred historical
+     fact — once an admin signed off, they can't be silently re-edited.
+     To change task or project NAMES, use Projects tab → ✎ Rename (propagates
+     globally, including to this approved week, while keeping status approved).
+     To change hours, admin must explicitly Reopen the week first (auditable). */
+  if(_origStatus==='approved'){
+    if(!confirm('"'+item.employee+'" — week '+item.weekStart+' is APPROVED.\n\n'+
+      'Approved hours are locked. Click OK to open in VIEW-ONLY mode.\n\n'+
+      'To rename a task or project, use the Projects tab — the rename will\n'+
+      'propagate to this week automatically.\n\n'+
+      'To edit hours, click Cancel and use the Reopen button on the row first.')){
+      return;
+    }
+  }
   // Store edit context
   _adminEdit={
     emp:item.employee,
     empId:item.employeeId||raw.employeeId||'',
     weekStart:item.weekStart,
-    origStatus:item.status||raw.status||'draft',
+    origStatus:_origStatus,
     origData:JSON.parse(JSON.stringify(raw))
   };
   // Load the employee's data into localStorage for the editor
@@ -6719,12 +6755,15 @@ function editHistTimesheet(idx){
   // Hide submit banner & submit button while admin-editing
   document.getElementById('subBanner').style.display='none';
   var subBtn=document.getElementById('submitBtn');if(subBtn)subBtn.style.display='none';
-  // Unlock inputs for admin editing
-  _adminEditMode=true;
-  document.getElementById('adminLockBanner').style.display='none';
+  /* v126: only unlock inputs if status allows editing. Approved → keep locked. */
+  _adminEditMode=(_origStatus!=='approved');
+  if(_origStatus!=='approved'){
+    document.getElementById('adminLockBanner').style.display='none';
+  }
   build();
-  audit('admin_edit_start',{emp:item.employee,week:item.weekStart});
-  toast('Editing '+item.employee+'\'s timesheet');
+  audit(_origStatus==='approved'?'admin_view_approved':'admin_edit_start',{emp:item.employee,week:item.weekStart,status:_origStatus});
+  if(_origStatus==='approved'){toast('👁 Viewing '+item.employee+'\'s approved week — hours locked')}
+  else{toast('Editing '+item.employee+'\'s timesheet')}
 }
 function adminEditSave(){
   if(!_adminEdit)return;
@@ -6739,6 +6778,18 @@ function adminEditSave(){
   if(_adminEdit.origData.approvedBy)data.approvedBy=_adminEdit.origData.approvedBy;
   data.editedByAdmin=true;data.editedAt=Date.now();
   var totH=0;data.days.forEach(function(d){totH+=d.hours||0});
+  /* v126: safety net — refuse to save if approved status + hours changed.
+     This catches any path that slipped past the view-only lock (e.g. someone
+     bypassed the DOM disable via DevTools). Compares total per-day hours
+     against original; if anything moved, error out + audit. */
+  if(_adminEdit.origStatus==='approved'){
+    var origTotH=0;(_adminEdit.origData.days||[]).forEach(function(d){origTotH+=parseFloat(d.hours)||0});
+    if(Math.abs(totH-origTotH)>=0.01){
+      alert('❌ Cannot save: hours changed on an APPROVED week ('+origTotH.toFixed(1)+'h → '+totH.toFixed(1)+'h).\n\nApproved hours are historical fact. To edit them, click Cancel and use the Reopen button on the row first — that will explicitly unlock the week + audit it.');
+      try{audit('admin_edit_refused',{emp:_adminEdit.emp,week:_adminEdit.weekStart,reason:'hours_changed_on_approved',from:origTotH,to:totH})}catch(e){}
+      return;
+    }
+  }
   var body={employee:_adminEdit.emp,weekStart:_adminEdit.weekStart,data:data,totalHours:totH,status:data.status};
   if(_adminEdit.empId)body.employeeId=_adminEdit.empId;
   if(data.submittedAt)body.submittedAt=data.submittedAt;
